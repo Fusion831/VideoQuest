@@ -10,6 +10,7 @@ from src.core.exceptions import InvalidStateTransition, InvalidConnectionTransit
 class SessionStatus(str, Enum):
     CREATED = "CREATED"
     ACTIVE = "ACTIVE"
+    ABANDONED = "ABANDONED"
     ENDED = "ENDED"
 
 
@@ -47,7 +48,7 @@ class DomainSession:
         return secrets.token_urlsafe(32)
 
     def activate(self) -> bool:
-        """Transition the session from CREATED to ACTIVE.
+        """Transition the session from CREATED or ABANDONED to ACTIVE.
         
         This method is idempotent:
         - If already ACTIVE, it returns False and performs no changes.
@@ -56,16 +57,33 @@ class DomainSession:
         if self.status == SessionStatus.ACTIVE:
             return False
             
-        if self.status != SessionStatus.CREATED:
+        if self.status not in (SessionStatus.CREATED, SessionStatus.ABANDONED):
             raise InvalidStateTransition(self.status.value, SessionStatus.ACTIVE.value)
             
         self.status = SessionStatus.ACTIVE
-        self.started_at = datetime.now(timezone.utc)
+        self.started_at = self.started_at or datetime.now(timezone.utc)
+        self.updated_at = datetime.now(timezone.utc)
+        return True
+
+    def abandon(self) -> bool:
+        """Transition the session from ACTIVE to ABANDONED.
+        
+        This method is idempotent:
+        - If already ABANDONED, it returns False.
+        - Otherwise, it transitions to ABANDONED and returns True.
+        """
+        if self.status == SessionStatus.ABANDONED:
+            return False
+            
+        if self.status != SessionStatus.ACTIVE:
+            raise InvalidStateTransition(self.status.value, SessionStatus.ABANDONED.value)
+            
+        self.status = SessionStatus.ABANDONED
         self.updated_at = datetime.now(timezone.utc)
         return True
 
     def end(self) -> bool:
-        """Transition the session from CREATED or ACTIVE to ENDED.
+        """Transition the session from CREATED, ACTIVE, or ABANDONED to ENDED.
         
         This method is idempotent:
         - If already ENDED, it returns False and performs no changes.
@@ -74,7 +92,7 @@ class DomainSession:
         if self.status == SessionStatus.ENDED:
             return False
             
-        if self.status not in (SessionStatus.CREATED, SessionStatus.ACTIVE):
+        if self.status not in (SessionStatus.CREATED, SessionStatus.ACTIVE, SessionStatus.ABANDONED):
             raise InvalidStateTransition(self.status.value, SessionStatus.ENDED.value)
 
         self.status = SessionStatus.ENDED
@@ -85,7 +103,7 @@ class DomainSession:
     @property
     def is_invite_valid(self) -> bool:
         """Invite is valid if the session is not ended."""
-        return self.status in (SessionStatus.CREATED, SessionStatus.ACTIVE)
+        return self.status in (SessionStatus.CREATED, SessionStatus.ACTIVE, SessionStatus.ABANDONED)
 
 
 class ParticipantRole(str, Enum):

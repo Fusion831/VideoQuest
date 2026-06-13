@@ -1,7 +1,6 @@
-from typing import Optional
 import uuid
-
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from typing import Optional, List
+from fastapi import APIRouter, Depends, HTTPException, Query, status, WebSocket, WebSocketDisconnect
 
 from src.core.exceptions import (
     DomainException,
@@ -28,6 +27,13 @@ from src.api.schemas import (
 from src.api.dependencies import get_session_service, get_participant_service, get_current_identity
 from src.services.session_service import SessionService
 from src.services.participant_service import ParticipantService
+
+# Real-time infrastructure imports
+from src.infrastructure.database import AsyncSessionLocal
+from src.infrastructure.repositories import SessionRepository, SessionEventRepository, ParticipantRepository
+from src.infrastructure.redis import RedisPresenceService
+from src.infrastructure.websocket_manager import ws_manager
+from src.domain.models import ParticipantConnectionStatus, SessionStatus
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -218,4 +224,133 @@ async def get_session_participants(
         return participants
     except SessionNotFound as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+
+
+@router.websocket("/{session_id}/ws")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    session_id: uuid.UUID,
+    participant_id: Optional[uuid.UUID] = None,
+):
+    """WebSocket presence connection gateway."""
+    redis_presence = RedisPresenceService()
+    
+    # 1. Validate session status
+    async with AsyncSessionLocal() as db_session:
+        session_repo = SessionRepository(db_session)
+        session = await session_repo.get_by_id(session_id)
+        if not session or session.status == SessionStatus.ENDED:
+            await websocket.close(code=4000, reason="Invalid or ended session")
+            return
+
+    # If participant is not specified, run as a read-only viewer
+    if not participant_id:
+        await ws_manager.connect(str(session_id), websocket)
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            await ws_manager.disconnect(str(session_id), websocket)
+        return
+
+    # 2. Validate connection credentials in short-lived DB session
+    async with AsyncSessionLocal() as db_session:
+        session_repo = SessionRepository(db_session)
+        participant_repo = ParticipantRepository(db_session)
+        event_repo = SessionEventRepository(db_session)
+        
+        participant_service = ParticipantService(session_repo, event_repo, participant_repo, db_session)
+        
+        # Check participant
+        participant = await participant_repo.get_by_id(participant_id)
+        if not participant or participant.session_id != session_id:
+            await websocket.close(code=4001, reason="Participant not found")
+            return
+            
+        if participant.connection_status == ParticipantConnectionStatus.LEFT:
+            await websocket.close(code=4002, reason="Participant already left")
+            return
+            
+        # Reconnect participant if disconnected
+        try:
+            await participant_service.reconnect_participant(session_id, participant_id)
+        except Exception:
+            # Let connection open if they were already CONNECTED
+            pass
+
+    # 3. Register with connection manager and Redis presence
+    await ws_manager.connect(str(session_id), websocket)
+    
+    # Generate unique identifier for this connection
+    connection_id = str(id(websocket))
+    await redis_presence.update_presence(str(session_id), str(participant_id), "CONNECTED")
+    await redis_presence.register_connection(str(session_id), connection_id)
+    
+    # Broadcast to session that participant connected/reconnected
+    await ws_manager.broadcast_to_session(
+        str(session_id),
+        "PARTICIPANT_RECONNECTED",
+        {
+            "participant_id": str(participant_id),
+            "user_id": participant.user_id,
+            "role": participant.role.value,
+        }
+    )
+
+    # 4. Enter WebSocket receive loop
+    try:
+        while True:
+            # Maintain active connection and check for disconnect
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        # 5. Handle WebSocket Disconnect
+        await ws_manager.disconnect(str(session_id), websocket)
+        
+        # Update connection registers in Redis
+        await redis_presence.unregister_connection(str(session_id), connection_id)
+        
+        async with AsyncSessionLocal() as db_session:
+            session_repo = SessionRepository(db_session)
+            participant_repo = ParticipantRepository(db_session)
+            event_repo = SessionEventRepository(db_session)
+            participant_service = ParticipantService(session_repo, event_repo, participant_repo, db_session)
+            
+            # Fetch latest participant state
+            p = await participant_repo.get_by_id(participant_id)
+            s = await session_repo.get_by_id(session_id)
+            
+            if p and p.connection_status != ParticipantConnectionStatus.LEFT and s and s.status != SessionStatus.ENDED:
+                # Mark as disconnected
+                await redis_presence.update_presence(str(session_id), str(participant_id), "DISCONNECTED")
+                
+                # Update database & handle abandonment if needed
+                await participant_service.disconnect_participant(session_id, participant_id)
+                
+                # Fetch fresh status to check if it abandoned
+                updated_session = await session_repo.get_by_id(session_id)
+                
+                # Broadcast disconnect event
+                if updated_session and updated_session.status == SessionStatus.ABANDONED:
+                    await ws_manager.broadcast_to_session(
+                        str(session_id),
+                        "SESSION_ABANDONED",
+                        {
+                            "disconnected_participant_id": str(participant_id),
+                            "reason": "All participants disconnected",
+                        }
+                    )
+                else:
+                    await ws_manager.broadcast_to_session(
+                        str(session_id),
+                        "PARTICIPANT_DISCONNECTED",
+                        {
+                            "participant_id": str(participant_id),
+                            "user_id": p.user_id,
+                            "role": p.role.value,
+                        }
+                    )
 

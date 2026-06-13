@@ -8,6 +8,11 @@ from src.infrastructure.database import Base, engine
 from src.api.routes import router as session_router
 
 
+import asyncio
+from src.services.lifecycle_monitor import monitor_abandoned_sessions
+from src.infrastructure.redis import close_redis
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup actions
@@ -16,11 +21,25 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables initialized.")
+    
+    # Start background lifecycle monitor
+    monitor_task = asyncio.create_task(monitor_abandoned_sessions())
+    
     yield
     # Shutdown actions
+    logger.info("Stopping background tasks...")
+    monitor_task.cancel()
+    try:
+        await monitor_task
+    except asyncio.CancelledError:
+        pass
+        
     logger.info("Closing database engine connections...")
     await engine.dispose()
     logger.info("Database engine connections closed.")
+    
+    # Close Redis client
+    await close_redis()
 
 
 app = FastAPI(

@@ -26,6 +26,7 @@ from src.infrastructure.repositories import (
     SessionEventRepository,
     ParticipantRepository,
 )
+from src.infrastructure.redis import RedisPresenceService
 
 
 class ParticipantService:
@@ -235,6 +236,12 @@ class ParticipantService:
     async def disconnect_participant(self, session_id: uuid.UUID, participant_id: uuid.UUID) -> DomainParticipant:
         """Mark participant as DISCONNECTED (idempotent transition)."""
         try:
+            session = await self.session_repo.get_by_id(session_id)
+            if not session:
+                raise SessionNotFound(str(session_id))
+            if session.status == SessionStatus.ENDED:
+                raise SessionAlreadyEnded(str(session_id))
+
             participant = await self.participant_repo.get_by_id(participant_id)
             if not participant or participant.session_id != session_id:
                 raise ParticipantNotFound(str(participant_id))
@@ -253,6 +260,30 @@ class ParticipantService:
                     },
                 )
                 await self.event_repo.save(event)
+
+                # Check if all participants in the session are now disconnected or left
+                all_participants = await self.participant_repo.get_by_session_id(session_id)
+                any_connected = any(p.connection_status == ParticipantConnectionStatus.CONNECTED for p in all_participants)
+                
+                if not any_connected and session.status == SessionStatus.ACTIVE:
+                    # Transition session to ABANDONED
+                    session.abandon()
+                    await self.session_repo.save(session)
+                    
+                    abandon_event = DomainSessionEvent(
+                        session_id=session_id,
+                        event_type=SessionEventType.SESSION_ABANDONED,
+                        metadata={
+                            "disconnected_participant_id": str(saved_participant.id),
+                            "reason": "All participants disconnected",
+                        },
+                    )
+                    await self.event_repo.save(abandon_event)
+                    
+                    # Set abandonment window in Redis (60s grace period)
+                    redis_presence = RedisPresenceService()
+                    await redis_presence.set_abandonment_expiry(str(session_id), ttl_seconds=60)
+
                 await self.db_session.commit()
                 return saved_participant
 
@@ -289,6 +320,26 @@ class ParticipantService:
                     },
                 )
                 await self.event_repo.save(event)
+
+                # Transition session back to ACTIVE if it was ABANDONED
+                if session.status == SessionStatus.ABANDONED:
+                    session.activate()
+                    await self.session_repo.save(session)
+                    
+                    activation_event = DomainSessionEvent(
+                        session_id=session_id,
+                        event_type=SessionEventType.SESSION_STARTED,
+                        metadata={
+                            "reconnected_participant_id": str(saved_participant.id),
+                            "reason": "Participant reconnected to abandoned session",
+                        },
+                    )
+                    await self.event_repo.save(activation_event)
+                    
+                    # Clear abandonment from Redis
+                    redis_presence = RedisPresenceService()
+                    await redis_presence.clear_abandonment_expiry(str(session_id))
+
                 await self.db_session.commit()
                 return saved_participant
 

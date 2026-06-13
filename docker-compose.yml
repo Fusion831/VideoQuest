@@ -40,6 +40,7 @@ services:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/videoquest
+      - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=development
     depends_on:
       db:

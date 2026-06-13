@@ -51,12 +51,75 @@ export default function SessionRoomPage({ params }: PageProps) {
     }
   };
 
-  // Poll room state every 3 seconds
+  // Find current participant ID from the loaded participants list
+  const currentParticipant = participants.find(
+    (p) => p.user_id === currentUserId && p.role.toLowerCase() === currentRole?.toLowerCase()
+  );
+  const currentParticipantId = currentParticipant?.id || null;
+
+  // Fetch room data on mount or sessionId change
   useEffect(() => {
     refreshRoomData();
-    const interval = setInterval(refreshRoomData, 3000);
-    return () => clearInterval(interval);
   }, [sessionId]);
+
+  // Establish WebSocket connection for real-time updates
+  useEffect(() => {
+    if (!sessionId) return;
+
+    let wsHost = 'ws://localhost:8000';
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+    if (apiUrl) {
+      try {
+        const urlObj = new URL(apiUrl);
+        const wsProto = urlObj.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsHost = `${wsProto}//${urlObj.host}`;
+      } catch (e) {
+        if (typeof window !== 'undefined') {
+          const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+          wsHost = `${wsProto}//${window.location.host}`;
+        }
+      }
+    }
+    
+    let wsUrl = `${wsHost}/api/v1/sessions/${sessionId}/ws`;
+    if (currentParticipantId) {
+      wsUrl += `?participant_id=${currentParticipantId}`;
+    }
+
+    console.log(`Connecting to WebSocket: ${wsUrl}`);
+    const ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      console.log('WebSocket connection established.');
+      setError(null);
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        console.log('Received WebSocket event:', message);
+        // Refresh room data to sync all states with backend
+        refreshRoomData();
+      } catch (err) {
+        console.error('Error handling WebSocket message:', err);
+      }
+    };
+
+    ws.onerror = (err) => {
+      console.error('WebSocket error:', err);
+    };
+
+    ws.onclose = (e) => {
+      console.log(`WebSocket connection closed: ${e.reason} (code: ${e.code})`);
+      if (e.code === 4000) {
+        setError('Session has ended or is invalid');
+      }
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, [sessionId, currentParticipantId]);
 
   // Set default invite token from fetched session
   useEffect(() => {
