@@ -979,7 +979,9 @@ function MediaGrid({
 
           {/* 4. Participant Media Status Overlay (Local) */}
           <div className="absolute top-3 left-3 bg-zinc-950/90 border border-zinc-800/80 rounded-lg p-2.5 text-[10px] text-zinc-300 space-y-1.5 backdrop-blur-sm shadow-xl min-w-[120px] z-10 select-none">
-            <div className="font-bold text-indigo-400 uppercase tracking-wider border-b border-zinc-800/50 pb-0.5">You ({role})</div>
+            <div className="font-bold text-indigo-400 uppercase tracking-wider border-b border-zinc-800/50 pb-0.5">
+              {localParticipant?.name || 'You'} ({role})
+            </div>
             <div className="flex items-center justify-between gap-2.5">
               <span className="text-zinc-500">Camera:</span>
               <span className={`font-semibold ${localCameraActive && isLocalVideoPublished ? 'text-emerald-400' : cameraSyncing ? 'text-amber-400 animate-pulse' : 'text-red-400'}`}>
@@ -1045,7 +1047,7 @@ function MediaGrid({
           {remoteParticipant && (
             <div className="absolute top-3 left-3 bg-zinc-950/90 border border-zinc-800/80 rounded-lg p-2.5 text-[10px] text-zinc-300 space-y-1.5 backdrop-blur-sm shadow-xl min-w-[120px] z-10 select-none">
               <div className="font-bold text-violet-400 uppercase tracking-wider border-b border-zinc-800/50 pb-0.5">
-                {remoteParticipant.identity.split('_')[0] || 'User'} ({expectedRemoteRole})
+                {remoteParticipant.name || remoteParticipant.identity} ({expectedRemoteRole})
               </div>
               <div className="flex items-center justify-between gap-2.5">
                 <span className="text-zinc-500">Camera:</span>

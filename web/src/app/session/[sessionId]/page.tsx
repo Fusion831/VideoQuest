@@ -37,6 +37,7 @@ export default function SessionRoomPage({ params }: PageProps) {
   // Resolve identity: URL query params first, then session-specific storage, then global agent auth
   const [resolvedUserId, setResolvedUserId] = useState<string | null>(() => {
     if (typeof window === 'undefined') return currentUserId;
+    if (currentRole === 'customer') return currentUserId || 'customer_default';
     const globalUserId = localStorage.getItem('vq_auth_userId');
     const globalRole = localStorage.getItem('vq_auth_role');
     if (globalRole === 'agent' && globalUserId) return globalUserId;
@@ -46,6 +47,7 @@ export default function SessionRoomPage({ params }: PageProps) {
 
   const [resolvedRole, setResolvedRole] = useState<'agent' | 'customer' | null>(() => {
     if (typeof window === 'undefined') return currentRole;
+    if (currentRole === 'customer') return 'customer';
     const globalRole = localStorage.getItem('vq_auth_role') as 'agent' | 'customer' | null;
     if (globalRole === 'agent') return 'agent';
     const sessionRole = localStorage.getItem(`${storedIdentityKey}_role`) as 'agent' | 'customer' | null;
@@ -67,7 +69,11 @@ export default function SessionRoomPage({ params }: PageProps) {
     let finalRole = resolvedRole;
     let source = 'state defaults';
 
-    if (globalRole === 'agent' && globalUserId) {
+    if (currentRole === 'customer') {
+      finalUserId = currentUserId || 'customer_default';
+      finalRole = 'customer';
+      source = 'URL query parameters (explicit customer override)';
+    } else if (globalRole === 'agent' && globalUserId) {
       finalUserId = globalUserId;
       finalRole = 'agent';
       source = 'global agent authentication';
@@ -94,7 +100,7 @@ export default function SessionRoomPage({ params }: PageProps) {
     if (finalUserId !== resolvedUserId) setResolvedUserId(finalUserId);
     if (finalRole !== resolvedRole) setResolvedRole(finalRole);
 
-    // Save identity to session storage (never downgrade agent to customer)
+    // Save identity to session storage (never downgrade agent to customer unless requested explicitly)
     if (finalUserId && finalRole) {
       localStorage.setItem(`${storedIdentityKey}_userId`, finalUserId);
       localStorage.setItem(`${storedIdentityKey}_role`, finalRole);
