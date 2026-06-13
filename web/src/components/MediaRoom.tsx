@@ -19,8 +19,10 @@ interface MediaRoomProps {
   userId: string;
   role: 'agent' | 'customer';
   sessionStatus: string;
+  customerLeft?: boolean;
   onShareSupportLink?: () => void;
   onEndSupportSession?: () => void;
+  onLeaveCall?: () => void;
 }
 
 const ROOM_OPTIONS = {
@@ -41,8 +43,10 @@ export default function MediaRoom({
   userId,
   role,
   sessionStatus,
+  customerLeft = false,
   onShareSupportLink,
   onEndSupportSession,
+  onLeaveCall,
 }: MediaRoomProps) {
   const recordTiming = (event: string) => {
     if (typeof window === 'undefined') return;
@@ -89,6 +93,10 @@ export default function MediaRoom({
     if (typeof window === 'undefined') return true;
     return localStorage.getItem('vq_pref_mic') !== 'false';
   });
+
+  // Keep initial connection preferences static to avoid LiveKitRoom internal reconnect/unpublish triggers
+  const [initialCameraEnabled] = useState(isCameraPreConnected);
+  const [initialMicEnabled] = useState(isMicrophonePreConnected);
 
   // Local preview stream for queue mode (when sessionStatus !== 'ACTIVE')
   const [localPreviewStream, setLocalPreviewStream] = useState<MediaStream | null>(null);
@@ -579,8 +587,8 @@ export default function MediaRoom({
       {visualMarker}
       {deviceWarning}
       <LiveKitRoom
-        video={isCameraPreConnected}
-        audio={isMicrophonePreConnected}
+        video={initialCameraEnabled}
+        audio={initialMicEnabled}
         token={token}
         serverUrl={livekitUrl}
         connect={true}
@@ -598,6 +606,8 @@ export default function MediaRoom({
           onConnected={() => {}}
           onShareSupportLink={onShareSupportLink}
           onEndSupportSession={onEndSupportSession}
+          onLeaveCall={onLeaveCall}
+          customerLeft={customerLeft}
         />
         <RoomAudioRenderer />
       </LiveKitRoom>
@@ -656,6 +666,8 @@ function MediaGrid({
   onConnected,
   onShareSupportLink,
   onEndSupportSession,
+  onLeaveCall,
+  customerLeft = false,
 }: {
   role: 'agent' | 'customer';
   isCameraPreConnected: boolean;
@@ -666,6 +678,8 @@ function MediaGrid({
   onConnected: () => void;
   onShareSupportLink?: () => void;
   onEndSupportSession?: () => void;
+  onLeaveCall?: () => void;
+  customerLeft?: boolean;
 }) {
   const tracks = useTracks(
     [
@@ -695,8 +709,10 @@ function MediaGrid({
   const [localMicActive, setLocalMicActive] = useState(isMicrophonePreConnected);
 
   // 3. Control locks during active WebRTC negotiations
-  const [cameraSyncing, setCameraSyncing] = useState(false);
-  const [micSyncing, setMicSyncing] = useState(false);
+  // Using refs instead of state so lock changes do NOT re-trigger useEffect dependency arrays
+  const cameraSyncingRef = useRef(false);
+  const micSyncingRef = useRef(false);
+  const [mediaError, setMediaError] = useState<string | null>(null);
 
   useEffect(() => {
     if (rawConnectionStatus === 'connected') {
@@ -806,70 +822,73 @@ function MediaGrid({
     };
   }, [room]);
 
-  // Sync state if props change from outside
-  useEffect(() => {
-    setLocalCameraActive(isCameraPreConnected);
-  }, [isCameraPreConnected]);
-
-  useEffect(() => {
-    setLocalMicActive(isMicrophonePreConnected);
-  }, [isMicrophonePreConnected]);
-
   // Synchronize target camera state to LiveKit in background
+  // cameraSyncingRef is a ref (not state) so changing it never re-triggers this effect
   useEffect(() => {
     if (!localParticipant) return;
+    if (localParticipant.isCameraEnabled === localCameraActive) return;
+    if (cameraSyncingRef.current) return;
+
     let active = true;
+    cameraSyncingRef.current = true;
 
-    async function syncCamera() {
-      if (localParticipant.isCameraEnabled !== localCameraActive && !cameraSyncing) {
-        setCameraSyncing(true);
-        try {
-          console.log(`[MediaGrid] Syncing camera state to: ${localCameraActive}`);
-          await localParticipant.setCameraEnabled(localCameraActive);
-          setIsCameraPreConnected(localCameraActive);
-        } catch (err) {
-          console.error("Failed to sync camera to LiveKit:", err);
-          if (active) {
-            setLocalCameraActive(localParticipant.isCameraEnabled);
-            setIsCameraPreConnected(localParticipant.isCameraEnabled);
-          }
-        } finally {
-          if (active) setCameraSyncing(false);
-        }
-      }
-    }
+    console.log(`[MediaGrid] Syncing camera → ${localCameraActive}`);
+    localParticipant.setCameraEnabled(localCameraActive)
+      .then(() => {
+        if (!active) return;
+        setIsCameraPreConnected(localCameraActive);
+        setMediaError(null);
+        console.log(`[MediaGrid] Camera sync success: ${localCameraActive}`);
+      })
+      .catch((err: any) => {
+        if (!active) return;
+        console.error('[MediaGrid] Camera sync failed:', err);
+        const msg = err?.message || 'Failed to toggle camera. Please check device permissions.';
+        setMediaError(msg);
+        // Roll back UI to actual LiveKit state
+        setLocalCameraActive(localParticipant.isCameraEnabled);
+        setIsCameraPreConnected(localParticipant.isCameraEnabled);
+      })
+      .finally(() => {
+        cameraSyncingRef.current = false;
+      });
 
-    syncCamera();
     return () => { active = false; };
-  }, [localCameraActive, localParticipant, cameraSyncing]);
+  }, [localCameraActive, localParticipant]);
 
   // Synchronize target microphone state to LiveKit in background
+  // micSyncingRef is a ref (not state) so changing it never re-triggers this effect
   useEffect(() => {
     if (!localParticipant) return;
+    if (localParticipant.isMicrophoneEnabled === localMicActive) return;
+    if (micSyncingRef.current) return;
+
     let active = true;
+    micSyncingRef.current = true;
 
-    async function syncMic() {
-      if (localParticipant.isMicrophoneEnabled !== localMicActive && !micSyncing) {
-        setMicSyncing(true);
-        try {
-          console.log(`[MediaGrid] Syncing microphone state to: ${localMicActive}`);
-          await localParticipant.setMicrophoneEnabled(localMicActive);
-          setIsMicrophonePreConnected(localMicActive);
-        } catch (err) {
-          console.error("Failed to sync microphone to LiveKit:", err);
-          if (active) {
-            setLocalMicActive(localParticipant.isMicrophoneEnabled);
-            setIsMicrophonePreConnected(localParticipant.isMicrophoneEnabled);
-          }
-        } finally {
-          if (active) setMicSyncing(false);
-        }
-      }
-    }
+    console.log(`[MediaGrid] Syncing mic → ${localMicActive}`);
+    localParticipant.setMicrophoneEnabled(localMicActive)
+      .then(() => {
+        if (!active) return;
+        setIsMicrophonePreConnected(localMicActive);
+        setMediaError(null);
+        console.log(`[MediaGrid] Mic sync success: ${localMicActive}`);
+      })
+      .catch((err: any) => {
+        if (!active) return;
+        console.error('[MediaGrid] Mic sync failed:', err);
+        const msg = err?.message || 'Failed to toggle microphone. Please check device permissions.';
+        setMediaError(msg);
+        // Roll back UI to actual LiveKit state
+        setLocalMicActive(localParticipant.isMicrophoneEnabled);
+        setIsMicrophonePreConnected(localParticipant.isMicrophoneEnabled);
+      })
+      .finally(() => {
+        micSyncingRef.current = false;
+      });
 
-    syncMic();
     return () => { active = false; };
-  }, [localMicActive, localParticipant, micSyncing]);
+  }, [localMicActive, localParticipant]);
 
   // 6. Track Publication Verification (Derived directly from LiveKit state)
   const localVideoPub = localParticipant ? localParticipant.getTrackPublication(Track.Source.Camera) : null;
@@ -891,8 +910,8 @@ function MediaGrid({
       isMicrophoneEnabled,
       localCameraActive,
       localMicActive,
-      cameraSyncing,
-      micSyncing,
+      cameraSyncing: cameraSyncingRef.current,
+      micSyncing: micSyncingRef.current,
       isLocalVideoPublished,
       isLocalAudioPublished,
     },
@@ -932,28 +951,47 @@ function MediaGrid({
       hasLocalVideoTrackRef: !!localVideoTrackRef,
       localVideoTrackSid: localVideoTrackRef?.publication?.trackSid || localVideoTrackRef?.track?.sid || 'None',
       isLocalVideoPublished,
-      cameraSyncing,
+      cameraSyncing: cameraSyncingRef.current,
     });
-  }, [localParticipant, localCameraActive, localVideoTrackRef, isLocalVideoPublished, cameraSyncing]);
+  }, [localParticipant, localCameraActive, localVideoTrackRef, isLocalVideoPublished]);
 
   const handleToggleMute = () => {
-    if (micSyncing || !localParticipant) return;
+    if (!localParticipant) return;
     setLocalMicActive(prev => !prev);
   };
 
   const handleToggleCamera = () => {
-    if (cameraSyncing || !localParticipant) return;
+    if (!localParticipant) return;
     setLocalCameraActive(prev => !prev);
   };
 
   const handleLeaveCall = () => {
     room?.disconnect();
+    if (onLeaveCall) {
+      onLeaveCall();
+    }
   };
 
   const remoteParticipantName = remoteParticipant?.name || 'Customer';
 
   return (
-    <div className="flex-1 flex flex-col h-full min-h-0 bg-zinc-900">
+    <div className="flex-1 flex flex-col h-full min-h-0 bg-zinc-900 relative">
+      {mediaError && (
+        <div className="absolute top-4 left-4 right-4 z-50 p-2.5 rounded-lg bg-red-950/80 border border-red-900/50 text-red-200 text-[10px] font-semibold flex items-center justify-between gap-2 shadow-lg backdrop-blur-md animate-fade-in">
+          <span className="flex items-center gap-1.5">
+            <svg className="w-3.5 h-3.5 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            {mediaError}
+          </span>
+          <button
+            onClick={() => setMediaError(null)}
+            className="text-red-400 hover:text-red-350 px-1.5 py-0.5 rounded hover:bg-red-900/40 text-[9px] font-bold uppercase tracking-wider cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 min-h-[300px] bg-zinc-950/30">
         
         {/* 1. Local Participant Tile */}
@@ -1031,14 +1069,27 @@ function MediaGrid({
               <svg className="w-8 h-8 mb-2 animate-pulse text-zinc-650" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536" />
               </svg>
-              <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-400 block mb-1">
-                {role === 'agent' ? 'Waiting for Customer' : 'Waiting for Support Agent'}
-              </span>
-              <span className="text-[9.5px] text-zinc-650 max-w-[210px] leading-relaxed">
-                {role === 'agent' 
-                  ? 'The invite link has been shared. The consultation will begin once the customer joins.'
-                  : 'Your request has been received. An agent will join shortly.'}
-              </span>
+              {customerLeft ? (
+                <>
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-400 block mb-1">
+                    Waiting for Customer
+                  </span>
+                  <span className="text-[9.5px] text-zinc-650 max-w-[210px] leading-relaxed">
+                    Customer has left the session. The customer may rejoin using their support link.
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-400 block mb-1">
+                    {role === 'agent' ? 'Waiting for Customer' : 'Waiting for Support Agent'}
+                  </span>
+                  <span className="text-[9.5px] text-zinc-650 max-w-[210px] leading-relaxed">
+                    {role === 'agent' 
+                      ? 'The invite link has been shared. The consultation will begin once the customer joins.'
+                      : 'Your request has been received. An agent will join shortly.'}
+                  </span>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -1064,7 +1115,6 @@ function MediaGrid({
           {/* Microphone Toggle */}
           <button
             onClick={handleToggleMute}
-            disabled={micSyncing}
             className={`px-4 py-2 rounded-xl border text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer ${
               !localMicActive
                 ? 'bg-red-950/40 border-red-900/30 text-red-400 hover:bg-red-900/20'
@@ -1084,7 +1134,6 @@ function MediaGrid({
           {/* Camera Toggle */}
           <button
             onClick={handleToggleCamera}
-            disabled={cameraSyncing}
             className={`px-4 py-2 rounded-xl border text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer ${
               !localCameraActive
                 ? 'bg-red-950/40 border-red-900/30 text-red-450 hover:bg-red-900/20'

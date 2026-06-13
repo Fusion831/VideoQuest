@@ -29,6 +29,19 @@ export default function AgentDashboard() {
   const [resolutionStatus, setResolutionStatus] = useState('RESOLVED');
   const [resolutionNotes, setResolutionNotes] = useState('');
   const [endingSession, setEndingSession] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const msg = localStorage.getItem('vq_toast_message');
+      if (msg) {
+        setToastMessage(msg);
+        localStorage.removeItem('vq_toast_message');
+        const timer = setTimeout(() => setToastMessage(null), 4000);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, []);
 
   const fetchSessions = async () => {
     try {
@@ -680,6 +693,15 @@ export default function AgentDashboard() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+      {toastMessage && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl animate-fade-in-up">
+          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+          <span className="text-xs font-semibold text-zinc-200">{toastMessage}</span>
+          <button onClick={() => setToastMessage(null)} className="text-zinc-500 hover:text-zinc-400 font-bold ml-2 cursor-pointer">
+            &times;
+          </button>
         </div>
       )}
     </div>

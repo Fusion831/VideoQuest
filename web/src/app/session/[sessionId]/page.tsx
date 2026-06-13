@@ -2,11 +2,20 @@
 
 import { use, useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { apiClient } from '@/lib/api-client';
 import { Session, Participant, SessionEvent, ChatMessage } from '@/lib/types';
 import ChatPanel from '@/components/ChatPanel';
 import MediaRoom from '@/components/MediaRoom';
+
+const RoomViewState = {
+  ACTIVE: 'ACTIVE',
+  CUSTOMER_LEFT: 'CUSTOMER_LEFT',
+  SESSION_ENDED: 'SESSION_ENDED',
+  WAITING_FOR_CUSTOMER: 'WAITING_FOR_CUSTOMER',
+  WAITING_FOR_AGENT: 'WAITING_FOR_AGENT',
+} as const;
+type RoomViewState = typeof RoomViewState[keyof typeof RoomViewState];
 
 interface PageProps {
   params: Promise<{ sessionId: string }>;
@@ -85,6 +94,8 @@ function SupportProgressTracker({ currentStage }: SupportProgressTrackerProps) {
 export default function SessionRoomPage({ params }: PageProps) {
   const { sessionId } = use(params);
   const searchParams = useSearchParams();
+  const router = useRouter();
+  const [localLeaveState, setLocalLeaveState] = useState<'none' | 'left'>('none');
 
   // URL Query context (to simulate being a specific joined participant)
   const currentRole = searchParams.get('role') as 'agent' | 'customer' | null;
@@ -216,6 +227,64 @@ export default function SessionRoomPage({ params }: PageProps) {
   useEffect(() => {
     refreshRoomData();
   }, [sessionId, resolvedRole]);
+
+  // Redirect agent if session status transitions to ENDED on backend
+  useEffect(() => {
+    if (session?.status === 'ENDED' && resolvedRole === 'agent') {
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('vq_toast_message', 'Support session completed.');
+      }
+      router.push('/agent');
+    }
+  }, [session?.status, resolvedRole, router]);
+
+  // Sync localLeaveState with participant status from backend
+  useEffect(() => {
+    if (participants.length > 0 && resolvedUserId && resolvedRole === 'customer') {
+      const customerPart = participants.find(
+        p => p.user_id === resolvedUserId && p.role.toLowerCase() === 'customer'
+      );
+      if (customerPart?.connection_status === 'LEFT' && localLeaveState === 'none') {
+        setLocalLeaveState('left');
+      }
+    }
+  }, [participants, resolvedUserId, resolvedRole, localLeaveState]);
+
+  // Derive RoomViewState
+  const getRoomViewState = (): RoomViewState => {
+    if (session?.status === 'ENDED') {
+      return RoomViewState.SESSION_ENDED;
+    }
+
+    const hasAgentJoined = participants.some(
+      p => p.role.toLowerCase() === 'agent' && p.connection_status === 'CONNECTED'
+    );
+
+    if (resolvedRole === 'customer') {
+      if (localLeaveState === 'left') {
+        return RoomViewState.CUSTOMER_LEFT;
+      }
+      if (!hasAgentJoined) {
+        return RoomViewState.WAITING_FOR_AGENT;
+      }
+      return RoomViewState.ACTIVE;
+    } else {
+      // Agent
+      const customerParticipant = participants.find(p => p.role.toLowerCase() === 'customer');
+      if (!customerParticipant) {
+        return RoomViewState.WAITING_FOR_CUSTOMER;
+      }
+      if (customerParticipant.connection_status === 'LEFT') {
+        return RoomViewState.CUSTOMER_LEFT;
+      }
+      if (customerParticipant.connection_status === 'DISCONNECTED') {
+        return RoomViewState.WAITING_FOR_CUSTOMER;
+      }
+      return RoomViewState.ACTIVE;
+    }
+  };
+
+  const viewState = getRoomViewState();
 
   // Self-healing Auto-join flow: Join automatically if resolved identity is present but not in the roster
   useEffect(() => {
@@ -377,8 +446,8 @@ export default function SessionRoomPage({ params }: PageProps) {
       setError(null);
       await apiClient.leaveSession(sessionId, pId);
 
-      // If we left as ourselves, clear our local resolved identity
-      if (pId === currentParticipantId) {
+      // If we left as ourselves, clear our local resolved identity (Staff only, or if session ended)
+      if (pId === currentParticipantId && resolvedRole === 'agent') {
         setResolvedUserId(null);
         setResolvedRole(null);
         if (typeof window !== 'undefined') {
@@ -398,17 +467,32 @@ export default function SessionRoomPage({ params }: PageProps) {
     try {
       setEndingSession(true);
       setError(null);
-      await apiClient.endSession(sessionId, session.agent_id, resolutionStatus, resolutionNotes);
+      await apiClient.endSession(sessionId, resolvedUserId || session.agent_id, resolutionStatus, resolutionNotes);
       if (typeof window !== 'undefined') {
         localStorage.setItem(`vq_consultation_${sessionId}_resolutionStatus`, resolutionStatus);
         localStorage.setItem(`vq_consultation_${sessionId}_resolutionNotes`, resolutionNotes);
+        localStorage.setItem('vq_toast_message', 'Support session completed.');
       }
       setShowEndSessionModal(false);
-      await refreshRoomData();
+      router.push('/agent');
     } catch (err: any) {
       setError(err.message || 'Failed to end session');
     } finally {
       setEndingSession(false);
+    }
+  };
+
+  const handleRejoinSession = async () => {
+    try {
+      setError(null);
+      if (session) {
+        await apiClient.joinSession(sessionId, resolvedUserId!, 'customer', session.invite_token);
+        setLocalLeaveState('none');
+        setAutoJoinAttempted(false);
+        await refreshRoomData();
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to rejoin session');
     }
   };
 
@@ -470,6 +554,8 @@ export default function SessionRoomPage({ params }: PageProps) {
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     };
 
+    let hasCustomerJoinedBefore = false;
+
     if (events && events.length > 0) {
       events.forEach((evt) => {
         let label = '';
@@ -487,15 +573,24 @@ export default function SessionRoomPage({ params }: PageProps) {
             type = 'success';
             break;
           case 'SESSION_ENDED':
-            label = 'Support session ended';
+            label = 'Session ended';
             type = 'warning';
             break;
           case 'PARTICIPANT_JOINED':
-            label = `${friendlyName} joined the conversation`;
+            if (role.toLowerCase() === 'customer') {
+              if (hasCustomerJoinedBefore) {
+                label = 'Customer rejoined';
+              } else {
+                label = 'Customer joined';
+                hasCustomerJoinedBefore = true;
+              }
+            } else {
+              label = `${friendlyName} joined the conversation`;
+            }
             type = 'info';
             break;
           case 'PARTICIPANT_LEFT':
-            label = `${friendlyName} left the conversation`;
+            label = role.toLowerCase() === 'customer' ? 'Customer left' : `${friendlyName} left the conversation`;
             type = 'warning';
             break;
           case 'PARTICIPANT_DISCONNECTED':
@@ -536,12 +631,25 @@ export default function SessionRoomPage({ params }: PageProps) {
           let type = 'info';
 
           if (label.includes('joined the session')) {
-            label = label.replace('joined the session', 'joined the conversation');
-            label = label.replace('Agent', 'Support Specialist');
+            if (label.includes('Customer')) {
+              if (hasCustomerJoinedBefore) {
+                label = 'Customer rejoined';
+              } else {
+                label = 'Customer joined';
+                hasCustomerJoinedBefore = true;
+              }
+            } else {
+              label = label.replace('joined the session', 'joined the conversation');
+              label = label.replace('Agent', 'Support Specialist');
+            }
             type = 'info';
           } else if (label.includes('left the session')) {
-            label = label.replace('left the session', 'left the conversation');
-            label = label.replace('Agent', 'Support Specialist');
+            if (label.includes('Customer')) {
+              label = 'Customer left';
+            } else {
+              label = label.replace('left the session', 'left the conversation');
+              label = label.replace('Agent', 'Support Specialist');
+            }
             type = 'warning';
           } else if (label.includes('reconnected')) {
             label = label.replace('Agent', 'Support Specialist');
@@ -553,7 +661,7 @@ export default function SessionRoomPage({ params }: PageProps) {
             label = 'Support session resumed';
             type = 'success';
           } else if (label.includes('Support session ended')) {
-            label = 'Support session ended';
+            label = 'Session ended';
             type = 'warning';
           } else if (label.includes('Issue resolved')) {
             label = 'Issue resolved';
@@ -577,7 +685,7 @@ export default function SessionRoomPage({ params }: PageProps) {
   };
 
   // 1. CUSTOMER WAITING SCREEN (No agent present in the conversation yet)
-  if (!isAgent && !hasAgentJoined) {
+  if (viewState === RoomViewState.WAITING_FOR_AGENT) {
     const issueSummary = typeof window !== 'undefined' ? localStorage.getItem(`vq_issue_${sessionId}`) : '';
 
     return (
@@ -749,34 +857,116 @@ export default function SessionRoomPage({ params }: PageProps) {
         {/* Support Step Journey Tracker */}
         <SupportProgressTracker currentStage={getActiveStep()} />
 
-        {/* 2-Column Grid Layout */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          
-          {/* Left Column (Video Consultation + Metadata Cards) - occupies 8 columns (70% width) */}
-          <div className="lg:col-span-8 space-y-6 w-full">
-            {/* Video Consultation Area */}
-            {resolvedUserId && resolvedRole && (session?.status !== 'ENDED' || isAgent) ? (
-              <MediaRoom
-                sessionId={sessionId}
-                userId={resolvedUserId}
-                role={resolvedRole}
-                sessionStatus={session?.status || 'CREATED'}
-              />
-            ) : session?.status === 'ENDED' ? (
-              <div className="rounded-2xl border border-zinc-800 bg-zinc-900 overflow-hidden shadow-xl shadow-black/40 flex flex-col p-8 items-center justify-center text-center min-h-[380px]">
-                <svg className="w-12 h-12 text-zinc-650 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <span className="text-sm font-semibold text-zinc-300">Support Session Concluded</span>
-                <p className="text-xs text-zinc-550 max-w-[280px] mt-1.5 leading-relaxed">
-                  This consultation has concluded. The support agent has resolved the issue.
-                </p>
+        {/* Customer Exit Screen */}
+        {viewState === RoomViewState.CUSTOMER_LEFT && resolvedRole === 'customer' ? (
+          <div className="w-full max-w-xl mx-auto p-8 sm:p-10 bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl relative space-y-6 text-center my-12 animate-scale-in">
+            <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-purple-500/20 to-transparent" />
+            <div className="w-12 h-12 rounded-full bg-zinc-950 border border-zinc-800 flex items-center justify-center mx-auto text-zinc-400">
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-xl font-bold text-zinc-100">You have left the support session.</h2>
+              <p className="text-zinc-400 text-sm">
+                The support request remains available if you need to rejoin.
+              </p>
+            </div>
+            <div className="p-3 bg-zinc-955 border border-zinc-900 rounded-xl text-xs flex justify-between items-center text-zinc-400 max-w-sm mx-auto">
+              <span>Session Status:</span>
+              <span className="font-semibold text-amber-400">Waiting for Customer</span>
+            </div>
+            <div className="flex gap-3 pt-2 max-w-sm mx-auto">
+              <button
+                type="button"
+                onClick={handleRejoinSession}
+                className="flex-1 py-2.5 px-4 rounded-xl bg-purple-600 hover:bg-purple-550 text-white font-medium text-xs shadow-md active:scale-95 transition-all cursor-pointer"
+              >
+                Rejoin Session
+              </button>
+              <Link
+                href="/"
+                className="flex-1 py-2.5 px-4 rounded-xl border border-zinc-800 text-zinc-350 hover:bg-zinc-850 text-xs font-semibold text-center block transition-all active:scale-95 cursor-pointer"
+              >
+                Return Home
+              </Link>
+            </div>
+          </div>
+        ) : viewState === RoomViewState.SESSION_ENDED && resolvedRole === 'customer' ? (
+          <div className="w-full max-w-xl mx-auto p-8 sm:p-10 bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl relative space-y-6 text-center my-12 animate-scale-in">
+            <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-purple-500/20 to-transparent" />
+            <div className="w-12 h-12 rounded-full bg-emerald-950/40 border border-emerald-900/30 flex items-center justify-center mx-auto text-emerald-400">
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-xl font-bold text-zinc-100">This support session has ended.</h2>
+              <p className="text-zinc-400 text-sm">
+                Thank you for contacting support.
+              </p>
+            </div>
+            <div className="p-4 bg-zinc-955 border border-zinc-900 rounded-xl text-xs space-y-2 max-w-sm mx-auto text-left">
+              <div className="flex justify-between py-0.5">
+                <span className="text-zinc-550">Agent</span>
+                <span className="font-semibold text-zinc-300">{agentName}</span>
               </div>
-            ) : (
-              <div className="p-6 rounded-2xl bg-zinc-900/50 border border-zinc-800/80 text-center text-zinc-550 text-xs">
-                Initializing video consultation stream...
+              <div className="flex justify-between py-0.5 border-t border-zinc-900 pt-1.5">
+                <span className="text-zinc-550">Duration</span>
+                <span className="font-semibold text-zinc-300">{getWaitingTimeLabel()}</span>
               </div>
-            )}
+              <div className="flex justify-between py-0.5 border-t border-zinc-900 pt-1.5">
+                <span className="text-zinc-550">Status</span>
+                <span className="font-semibold text-emerald-400">Completed</span>
+              </div>
+            </div>
+            <div className="max-w-sm mx-auto pt-2">
+              <Link
+                href="/"
+                className="w-full py-2.5 px-4 rounded-xl border border-zinc-800 text-zinc-355 hover:bg-zinc-850 text-xs font-semibold text-center block transition-all active:scale-95 cursor-pointer"
+              >
+                Return Home
+              </Link>
+            </div>
+          </div>
+        ) : (
+          /* 2-Column Grid Layout */
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+            
+            {/* Left Column (Video Consultation + Metadata Cards) - occupies 8 columns (70% width) */}
+            <div className="lg:col-span-8 space-y-6 w-full">
+              {/* Video Consultation Area */}
+              {resolvedUserId && resolvedRole && (session?.status !== 'ENDED' || isAgent) ? (
+                <MediaRoom
+                  sessionId={sessionId}
+                  userId={resolvedUserId}
+                  role={resolvedRole}
+                  sessionStatus={session?.status || 'CREATED'}
+                  customerLeft={participants.some(p => p.role.toLowerCase() === 'customer' && p.connection_status === 'LEFT')}
+                  onShareSupportLink={handleCopyLink}
+                  onEndSupportSession={() => setShowEndSessionModal(true)}
+                  onLeaveCall={async () => {
+                    setLocalLeaveState('left');
+                    if (currentParticipantId) {
+                      await handleLeave(currentParticipantId);
+                    }
+                  }}
+                />
+              ) : session?.status === 'ENDED' ? (
+                <div className="rounded-2xl border border-zinc-800 bg-zinc-900 overflow-hidden shadow-xl shadow-black/40 flex flex-col p-8 items-center justify-center text-center min-h-[380px]">
+                  <svg className="w-12 h-12 text-zinc-650 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span className="text-sm font-semibold text-zinc-300">Support Session Concluded</span>
+                  <p className="text-xs text-zinc-550 max-w-[280px] mt-1.5 leading-relaxed">
+                    This consultation has concluded. The support agent has resolved the issue.
+                  </p>
+                </div>
+              ) : (
+                <div className="p-6 rounded-2xl bg-zinc-900/50 border border-zinc-800/80 text-center text-zinc-550 text-xs">
+                  Initializing video consultation stream...
+                </div>
+              )}
 
             {/* Sub-grid below video (Roster + Details) */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1048,6 +1238,7 @@ export default function SessionRoomPage({ params }: PageProps) {
           </div>
 
         </div>
+        )}
       </main>
 
       {showEndSessionModal && (
@@ -1056,9 +1247,9 @@ export default function SessionRoomPage({ params }: PageProps) {
             <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-purple-500/20 to-transparent" />
             
             <div className="space-y-2">
-              <h3 className="text-xl font-semibold text-zinc-100">Complete Support Session</h3>
+              <h3 className="text-xl font-semibold text-zinc-100">End Support Session?</h3>
               <p className="text-zinc-400 text-sm">
-                Specify the resolution outcome and provide concluding notes for this session.
+                This will close the consultation for all participants.
               </p>
             </div>
 
@@ -1134,7 +1325,7 @@ export default function SessionRoomPage({ params }: PageProps) {
                     Completing...
                   </>
                 ) : (
-                  'Complete Session'
+                  'End Session'
                 )}
               </button>
             </div>
