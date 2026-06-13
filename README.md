@@ -129,16 +129,16 @@ graph LR
         AB["Agent Browser"]
     end
 
-    CB <=>|WS Frame: SEND_MESSAGE| WS1
+    CB <-->|WS Frame: SEND_MESSAGE| WS1
     WS1 -->|Publish Event| Channel
     Channel -->|Fan-out Event| WS2
-    WS2 <=>|WS Frame: MESSAGE_RECEIVED| AB
+    WS2 <-->|WS Frame: MESSAGE_RECEIVED| AB
     
     %% Bidirectional flow indication
-    AB <=>|WS Frame: SEND_MESSAGE| WS2
+    AB <-->|WS Frame: SEND_MESSAGE| WS2
     WS2 -->|Publish Event| Channel
     Channel -->|Fan-out Event| WS1
-    WS1 <=>|WS Frame: MESSAGE_RECEIVED| CB
+    WS1 <-->|WS Frame: MESSAGE_RECEIVED| CB
 ```
 
 1. **Client Send:** A client sends a message frame over their local WebSocket connection to their hosting FastAPI worker.
