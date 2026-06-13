@@ -6,14 +6,29 @@ For a comprehensive deep dive into the architecture, design patterns, and databa
 
 ---
 
-## 1. Quick Start Setup
+## 1. Environment Variables Configuration
+
+Before launching the services, you must create a `.env` file at the root of the project to configure the service links and credentials:
+
+```env
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/videoquest
+REDIS_URL=redis://localhost:6379/0
+ENVIRONMENT=development
+LIVEKIT_URL=http://localhost:7880
+LIVEKIT_API_KEY=devkey
+LIVEKIT_API_SECRET=secret
+```
+
+---
+
+## 2. Quick Start Setup
 
 ### Prerequisites
 * Docker and Docker Compose installed.
 * Alternatively, for manual local setup: Python 3.13 (`uv` manager recommended) and Node.js (v18+).
 
 ### Method A: Docker Compose (Recommended)
-This starts the entire suite (PostgreSQL, Redis, LiveKit media server, FastAPI backend, Next.js frontend) in a single command.
+This starts the entire suite (PostgreSQL, Redis, LiveKit media server, FastAPI backend, Next.js frontend) in a single command. It automatically consumes the `.env` file created in Step 1.
 
 ```bash
 # Start all containers in the background
@@ -60,7 +75,9 @@ livekit-server --config livekit.yaml
 
 ---
 
-## 2. Ports and Endpoints
+## 3. Ports and Endpoints
+
+Once the application is running, you can interact with the components at the following local ports:
 
 | Service | Protocol / Port | Target Address |
 |---|---|---|
@@ -70,20 +87,6 @@ livekit-server --config livekit.yaml
 | **LiveKit SFU Server** | HTTP (7880) | `http://localhost:7880` |
 | **PostgreSQL Database** | TCP (5432) | `localhost:5432` |
 | **Redis Cache & Pub/Sub** | TCP (6379) | `localhost:6379` |
-
----
-
-## 3. Environment Variables Configuration
-Create a `.env` file at the root of the project:
-
-```env
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/videoquest
-REDIS_URL=redis://localhost:6379/0
-ENVIRONMENT=development
-LIVEKIT_URL=http://localhost:7880
-LIVEKIT_API_KEY=devkey
-LIVEKIT_API_SECRET=secret
-```
 
 ---
 
@@ -103,6 +106,6 @@ The following architectural constraints are intentionally deferred in this hacka
 
 1. **Header-Based Authentication:** User identification and role enforcement (`AGENT` vs. `CUSTOMER`) rely on HTTP headers (`X-User-ID` and `X-User-Role`) rather than secure JWT or OAuth2 credentials.
 2. **Single-Tenant Deployment:** There is no tenant isolation. All agents can view, access, and manage all support sessions globally.
-3. **No Ticket Escalation or Queueing:** Support rooms are created and joined ad-hoc. The platform lacks support ticket queues, automated ticket assignment, or tier-based escalation policies.
+3. **No Ticket Escalation or Queueing:** Support rooms are created and joined ad-hoc. The platform lacks support ticket queues, automatic agent assignment, or tier-based escalation policies.
 4. **No Chat Attachment Uploads:** Real-time communications are restricted to text messages and video feeds. There is no support for uploading files, screenshots, or diagnostic logs.
 5. **In-Process WebSocket Scaling Limit:** The backend routing manager (`WebSocketManager`) utilizes local, in-process loops to listen to Redis Pub/Sub events. In an auto-scaled production environment with hundreds of concurrent workers, this needs to be decoupled via a shared Redis session tracker to prevent subscription leaks.
