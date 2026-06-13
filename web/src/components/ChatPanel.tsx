@@ -32,6 +32,7 @@ export default function ChatPanel({
   };
 
   const isReadOnly = sessionStatus === 'ENDED';
+  const isAbandoned = sessionStatus === 'ABANDONED';
   const isNotJoined = !currentParticipantId;
 
   // Helper to find participant/user details for the sender
@@ -107,6 +108,10 @@ export default function ChatPanel({
         {isReadOnly ? (
           <div className="py-2 px-3 rounded-lg bg-zinc-950/40 border border-zinc-800 text-center text-xs text-zinc-500">
             ⚠️ Chat history is read-only (Session has ended)
+          </div>
+        ) : isAbandoned ? (
+          <div className="py-2 px-3 rounded-lg bg-amber-950/40 border border-amber-800/40 text-center text-xs text-amber-400">
+            ⏳ Session abandoned — waiting for reconnect. Chat paused.
           </div>
         ) : isNotJoined ? (
           <div className="py-2 px-3 rounded-lg bg-zinc-950/40 border border-zinc-800 text-center text-xs text-indigo-400">
