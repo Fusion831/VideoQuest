@@ -42,6 +42,10 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/videoquest
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=development
+      - LIVEKIT_URL=http://livekit:7880
+      - LIVEKIT_PUBLIC_URL=ws://localhost:7880
+      - LIVEKIT_API_KEY=devkey
+      - LIVEKIT_API_SECRET=secret01234567890123456789abcdef
     depends_on:
       db:
         condition: service_healthy
@@ -58,8 +62,22 @@ services:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+      - NEXT_PUBLIC_LIVEKIT_URL=ws://localhost:7880
     depends_on:
       - backend
+    restart: always
+
+  livekit:
+    image: livekit/livekit-server:v1.5
+    container_name: videoquest-livekit
+    command: --config /etc/livekit.yaml --node-ip 127.0.0.1
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882"
+      - "50000-50050:50000-50050/udp"
     restart: always
 
 volumes:

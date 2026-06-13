@@ -76,3 +76,9 @@ class ChatMessageResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+class LiveKitTokenResponse(BaseModel):
+    token: str
+    livekit_url: str
+
+

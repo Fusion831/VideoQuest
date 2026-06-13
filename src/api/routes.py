@@ -25,8 +25,9 @@ from src.api.schemas import (
     ParticipantJoinRequest,
     ParticipantResponse,
     ChatMessageResponse,
+    LiveKitTokenResponse,
 )
-from src.api.dependencies import get_session_service, get_participant_service, get_chat_service, get_current_identity
+from src.api.dependencies import get_session_service, get_participant_service, get_chat_service, get_current_identity, get_db_session
 from src.services.session_service import SessionService
 from src.services.participant_service import ParticipantService
 from src.services.chat_service import ChatService
@@ -267,6 +268,68 @@ async def list_session_messages(
         return messages
     except SessionNotFound as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+
+
+@router.get("/{session_id}/livekit-token", response_model=LiveKitTokenResponse)
+async def get_livekit_token(
+    session_id: uuid.UUID,
+    identity: Identity = Depends(get_current_identity),
+    db_session = Depends(get_db_session),
+):
+    """Generate a LiveKit token for media streaming after validating participant access."""
+    # 1. Fetch Session
+    session_repo = SessionRepository(db_session)
+    session = await session_repo.get_by_id(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found"
+        )
+
+    # 2. Validate Session Status
+    if session.status != SessionStatus.ACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Session is in {session.status.value} status. Media is only available when the session is ACTIVE."
+        )
+
+    # 3. Validate Participant
+    participant_repo = ParticipantRepository(db_session)
+    role_val = identity.role.upper()
+    participant = await participant_repo.get_by_session_and_role(session_id, role_val)
+    if not participant or participant.user_id != identity.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Participant does not belong to this session"
+        )
+
+    # 4. Check if Participant Left
+    if participant.connection_status == ParticipantConnectionStatus.LEFT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Participant has already left the session"
+        )
+
+    # 5. Generate token
+    from src.services.livekit_service import LiveKitService
+    from src.core.config import settings
+
+    livekit_service = LiveKitService()
+    token = livekit_service.generate_token(
+        room_name=str(session_id),
+        identity=str(participant.id),
+        name=participant.user_id
+    )
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LiveKit token generation failed"
+        )
+
+    return {
+        "token": token,
+        "livekit_url": settings.LIVEKIT_PUBLIC_URL
+    }
 
 
 @router.websocket("/{session_id}/ws")

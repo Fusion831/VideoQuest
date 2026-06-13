@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { apiClient } from '@/lib/api-client';
 import { Session, Participant, SessionEvent, ChatMessage } from '@/lib/types';
 import ChatPanel from '@/components/ChatPanel';
+import MediaRoom from '@/components/MediaRoom';
 
 interface PageProps {
   params: Promise<{ sessionId: string }>;
@@ -59,11 +60,11 @@ export default function SessionRoomPage({ params }: PageProps) {
 
   // UX1 fix: resolve identity from URL params first, fall back to localStorage
   const storedIdentityKey = `vq_identity_${sessionId}`;
-  const [resolvedUserId] = useState<string | null>(() => {
+  const [resolvedUserId, setResolvedUserId] = useState<string | null>(() => {
     if (typeof window === 'undefined') return currentUserId;
     return currentUserId || localStorage.getItem(`${storedIdentityKey}_userId`);
   });
-  const [resolvedRole] = useState<'agent' | 'customer' | null>(() => {
+  const [resolvedRole, setResolvedRole] = useState<'agent' | 'customer' | null>(() => {
     if (typeof window === 'undefined') return currentRole;
     const stored = localStorage.getItem(`${storedIdentityKey}_role`) as 'agent' | 'customer' | null;
     return currentRole || stored;
@@ -74,6 +75,15 @@ export default function SessionRoomPage({ params }: PageProps) {
     (p) => p.user_id === resolvedUserId && p.role.toLowerCase() === resolvedRole?.toLowerCase()
   );
   const currentParticipantId = currentParticipant?.id || null;
+
+  // Log runtime state audit variables
+  console.log('[SessionRoomPage] Audit Logs:', {
+    resolvedUserId,
+    resolvedRole,
+    currentParticipantId,
+    sessionStatus: session?.status || 'CREATED',
+    mediaRoomMounted: resolvedUserId && resolvedRole ? 'YES' : 'NO',
+  });
 
   // Persist participant identity to localStorage whenever we successfully identify ourselves
   useEffect(() => {
@@ -88,17 +98,18 @@ export default function SessionRoomPage({ params }: PageProps) {
     refreshRoomData();
   }, [sessionId]);
 
-  // UX2 fix: WS effect only depends on sessionId to avoid reconnect loops.
-  // currentParticipantId is passed via URL param at connect time (captured at open).
-  // Re-runs only when we navigate to a different session.
-
   // Establish WebSocket connection for real-time updates (tied to sessionId only)
+  // UX2 fix: currentParticipantId is captured via ref at connect time.
+  // The effect must NOT depend on currentParticipantId to avoid reconnect cascades
+  // that destroy the LiveKit media connection.
+  const participantIdRef = useRef(currentParticipantId);
+  participantIdRef.current = currentParticipantId;
+
   useEffect(() => {
     if (!sessionId) return;
 
     // Capture participant ID at the moment the WS connection is opened
-    // so that identity changes mid-render don't cause reconnect loops (UX2 fix)
-    const participantIdAtOpen = currentParticipantId;
+    const participantIdAtOpen = participantIdRef.current;
 
     let wsHost = 'ws://localhost:8000';
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? window.location.origin : '');
@@ -165,7 +176,7 @@ export default function SessionRoomPage({ params }: PageProps) {
       ws.close();
       wsRef.current = null;
     };
-  }, [sessionId, currentParticipantId]); // Connect as participant once currentParticipantId loads
+  }, [sessionId]); // Only reconnect when navigating to a different session
 
   // Set default invite token from fetched session
   useEffect(() => {
@@ -189,6 +200,15 @@ export default function SessionRoomPage({ params }: PageProps) {
     try {
       setError(null);
       await apiClient.joinSession(sessionId, simUserId, simRole, simRole === 'customer' ? simInviteToken : undefined);
+      
+      // Sync simulated identity to trigger MediaRoom rendering
+      setResolvedUserId(simUserId);
+      setResolvedRole(simRole);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(`${storedIdentityKey}_userId`, simUserId);
+        localStorage.setItem(`${storedIdentityKey}_role`, simRole);
+      }
+
       await refreshRoomData();
     } catch (err: any) {
       setError(err.message || 'Join failed');
@@ -219,6 +239,17 @@ export default function SessionRoomPage({ params }: PageProps) {
     try {
       setError(null);
       await apiClient.leaveSession(sessionId, pId);
+
+      // If we left as ourselves, clear our local resolved identity
+      if (pId === currentParticipantId) {
+        setResolvedUserId(null);
+        setResolvedRole(null);
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem(`${storedIdentityKey}_userId`);
+          localStorage.removeItem(`${storedIdentityKey}_role`);
+        }
+      }
+
       await refreshRoomData();
     } catch (err: any) {
       setError(err.message || 'Leave failed');
@@ -446,6 +477,23 @@ export default function SessionRoomPage({ params }: PageProps) {
 
           {/* Middle/Right Side: diagnostic events & simulations controller (7 cols) */}
           <div className="lg:col-span-7 space-y-6">
+            {/* LiveKit Media Room Call */}
+            {resolvedUserId && resolvedRole ? (
+              <MediaRoom
+                sessionId={sessionId}
+                userId={resolvedUserId}
+                role={resolvedRole}
+                sessionStatus={session?.status || 'CREATED'}
+              />
+            ) : (
+              <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 text-center text-zinc-500 text-xs">
+                <svg className="w-10 h-10 text-zinc-700 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+                <span>Join the session as an Agent or Customer using the controller below to initialize video/audio streaming.</span>
+              </div>
+            )}
+
             {/* Participant Simulation Controller */}
             {session?.status !== 'ENDED' && (
               <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30">

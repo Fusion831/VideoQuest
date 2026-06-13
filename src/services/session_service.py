@@ -138,6 +138,15 @@ class SessionService:
                         pending_broadcasts.append((session_id, p_payload))
 
                 await self.db_session.commit()
+
+                # Clean up the LiveKit room after successful DB commit
+                try:
+                    from src.services.livekit_service import LiveKitService
+                    livekit_service = LiveKitService()
+                    await livekit_service.delete_room(str(session_id))
+                except Exception:
+                    pass
+
                 # Bug #1 fix: broadcast AFTER commit
                 for sid, p in pending_broadcasts:
                     await broadcast_system_message_payload(sid, p)

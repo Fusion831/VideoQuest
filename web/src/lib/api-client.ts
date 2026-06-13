@@ -139,4 +139,21 @@ export const apiClient = {
   async getChatMessages(sessionId: string): Promise<ChatMessage[]> {
     return fetchJson<ChatMessage[]>(`/sessions/${sessionId}/messages`);
   },
+
+  async getLiveKitToken(
+    sessionId: string,
+    userId: string,
+    role: 'agent' | 'customer'
+  ): Promise<{ token: string; livekit_url: string }> {
+    return fetchJson<{ token: string; livekit_url: string }>(
+      `/sessions/${sessionId}/livekit-token`,
+      {
+        method: 'GET',
+        headers: {
+          'X-User-ID': userId,
+          'X-User-Role': role,
+        },
+      }
+    );
+  },
 };
