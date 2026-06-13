@@ -451,6 +451,123 @@ function MediaGrid({
   const remoteParticipant = participants.find((p) => p.sid !== localParticipant?.sid);
   const expectedRemoteRole = role === 'agent' ? 'customer' : 'agent';
 
+  // 1. Local UI Target States for lag-free visual response
+  const [localCameraActive, setLocalCameraActive] = useState(isCameraPreConnected);
+  const [localMicActive, setLocalMicActive] = useState(isMicrophonePreConnected);
+
+  // 2. Control locks during active WebRTC negotiations
+  const [cameraSyncing, setCameraSyncing] = useState(false);
+  const [micSyncing, setMicSyncing] = useState(false);
+
+  // LiveKit Diagnostic Event Listeners
+  useEffect(() => {
+    if (!room) return;
+
+    const logEvent = (eventName: string, ...args: any[]) => {
+      console.log(`[LK-DIAG] Event: ${eventName}`, args.map(arg => {
+        if (!arg) return arg;
+        if (typeof arg === 'string') return arg;
+        if (typeof arg === 'object') {
+          return {
+            identity: arg.identity || arg.participant?.identity,
+            sid: arg.sid || arg.trackSid || arg.track?.sid,
+            source: arg.source,
+            isMuted: arg.isMuted,
+            isSubscribed: arg.isSubscribed,
+          };
+        }
+        return arg;
+      }));
+    };
+
+    const events = [
+      RoomEvent.ParticipantConnected,
+      RoomEvent.ParticipantDisconnected,
+      RoomEvent.TrackPublished,
+      RoomEvent.TrackUnpublished,
+      RoomEvent.TrackSubscribed,
+      RoomEvent.TrackUnsubscribed,
+      RoomEvent.TrackMuted,
+      RoomEvent.TrackUnmuted,
+      RoomEvent.ConnectionStateChanged,
+    ];
+
+    events.forEach(evt => {
+      room.on(evt, (...args: any[]) => logEvent(evt, ...args));
+    });
+
+    return () => {
+      events.forEach(evt => {
+        room.off(evt, (...args: any[]) => logEvent(evt, ...args));
+      });
+    };
+  }, [room]);
+
+  // Sync state if props change from outside
+  useEffect(() => {
+    setLocalCameraActive(isCameraPreConnected);
+  }, [isCameraPreConnected]);
+
+  useEffect(() => {
+    setLocalMicActive(isMicrophonePreConnected);
+  }, [isMicrophonePreConnected]);
+
+  // Synchronize target camera state to LiveKit in background
+  useEffect(() => {
+    if (!localParticipant) return;
+    let active = true;
+
+    async function syncCamera() {
+      if (localParticipant.isCameraEnabled !== localCameraActive && !cameraSyncing) {
+        setCameraSyncing(true);
+        try {
+          console.log(`[MediaGrid] Syncing camera state to: ${localCameraActive}`);
+          await localParticipant.setCameraEnabled(localCameraActive);
+          setIsCameraPreConnected(localCameraActive);
+        } catch (err) {
+          console.error("Failed to sync camera to LiveKit:", err);
+          if (active) {
+            setLocalCameraActive(localParticipant.isCameraEnabled);
+            setIsCameraPreConnected(localParticipant.isCameraEnabled);
+          }
+        } finally {
+          if (active) setCameraSyncing(false);
+        }
+      }
+    }
+
+    syncCamera();
+    return () => { active = false; };
+  }, [localCameraActive, localParticipant, cameraSyncing]);
+
+  // Synchronize target microphone state to LiveKit in background
+  useEffect(() => {
+    if (!localParticipant) return;
+    let active = true;
+
+    async function syncMic() {
+      if (localParticipant.isMicrophoneEnabled !== localMicActive && !micSyncing) {
+        setMicSyncing(true);
+        try {
+          console.log(`[MediaGrid] Syncing microphone state to: ${localMicActive}`);
+          await localParticipant.setMicrophoneEnabled(localMicActive);
+          setIsMicrophonePreConnected(localMicActive);
+        } catch (err) {
+          console.error("Failed to sync microphone to LiveKit:", err);
+          if (active) {
+            setLocalMicActive(localParticipant.isMicrophoneEnabled);
+            setIsMicrophonePreConnected(localParticipant.isMicrophoneEnabled);
+          }
+        } finally {
+          if (active) setMicSyncing(false);
+        }
+      }
+    }
+
+    syncMic();
+    return () => { active = false; };
+  }, [localMicActive, localParticipant, micSyncing]);
+
   // 6. Track Publication Verification (Derived directly from LiveKit state)
   const localVideoPub = localParticipant ? localParticipant.getTrackPublication(Track.Source.Camera) : null;
   const localAudioPub = localParticipant ? localParticipant.getTrackPublication(Track.Source.Microphone) : null;
@@ -461,6 +578,36 @@ function MediaGrid({
   const remoteAudioPub = remoteParticipant ? remoteParticipant.getTrackPublication(Track.Source.Microphone) : null;
   const isRemoteVideoPublished = !!remoteVideoPub && !!remoteVideoPub.track && !remoteVideoPub.isMuted;
   const isRemoteAudioPublished = !!remoteAudioPub && !!remoteAudioPub.track && !remoteAudioPub.isMuted;
+
+  // Render diagnostics logging
+  console.log('[MediaGrid-Render] Diagnostics:', {
+    connectionState: room?.state,
+    localParticipant: {
+      identity: localParticipant?.identity,
+      isCameraEnabled,
+      isMicrophoneEnabled,
+      localCameraActive,
+      localMicActive,
+      cameraSyncing,
+      micSyncing,
+      isLocalVideoPublished,
+      isLocalAudioPublished,
+    },
+    remoteParticipant: remoteParticipant ? {
+      identity: remoteParticipant.identity,
+      isCameraEnabled: remoteParticipant.isCameraEnabled,
+      isMicrophoneEnabled: remoteParticipant.isMicrophoneEnabled,
+      isRemoteVideoPublished,
+      isRemoteAudioPublished,
+    } : null,
+    tracksCount: tracks.length,
+    tracks: tracks.map(t => ({
+      participant: t.participant?.identity,
+      source: t.source,
+      isPlaceholder: (t as any).placeholder,
+      trackSid: (t as any).track?.sid,
+    }))
+  });
 
   // 8. Connection state mapping
   const connState = room?.state || 'disconnected';
@@ -475,15 +622,13 @@ function MediaGrid({
     : null;
 
   const handleToggleMute = () => {
-    const nextVal = !isMicrophoneEnabled;
-    localParticipant?.setMicrophoneEnabled(nextVal);
-    setIsMicrophonePreConnected(nextVal);
+    if (micSyncing || !localParticipant) return;
+    setLocalMicActive(prev => !prev);
   };
 
   const handleToggleCamera = () => {
-    const nextVal = !isCameraEnabled;
-    localParticipant?.setCameraEnabled(nextVal);
-    setIsCameraPreConnected(nextVal);
+    if (cameraSyncing || !localParticipant) return;
+    setLocalCameraActive(prev => !prev);
   };
 
   const handleLeaveCall = () => {
@@ -496,10 +641,20 @@ function MediaGrid({
         
         {/* 1. Local Participant Tile (Always Visible) */}
         <div className="relative rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800 flex items-center justify-center">
-          {isCameraEnabled && localVideoTrackRef ? (
-            <div className="w-full h-full [&>video]:object-cover relative">
-              <VideoTrack trackRef={localVideoTrackRef} className="w-full h-full object-cover" />
-            </div>
+          {localCameraActive ? (
+            localVideoTrackRef ? (
+              <div className="w-full h-full [&>video]:object-cover relative">
+                <VideoTrack trackRef={localVideoTrackRef} className="w-full h-full object-cover scale-x-[-1]" />
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none gap-2">
+                <svg className="w-8 h-8 animate-spin text-indigo-500" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-400">Starting camera...</span>
+              </div>
+            )
           ) : (
             <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none">
               <svg className="w-12 h-12 mb-2 text-zinc-750" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -514,14 +669,14 @@ function MediaGrid({
             <div className="font-bold text-indigo-400 uppercase tracking-wider border-b border-zinc-800/50 pb-0.5">You ({role})</div>
             <div className="flex items-center justify-between gap-2.5">
               <span className="text-zinc-500">Camera:</span>
-              <span className={`font-semibold ${isCameraEnabled && isLocalVideoPublished ? 'text-emerald-400' : 'text-red-400'}`}>
-                {isCameraEnabled && isLocalVideoPublished ? 'ON' : 'OFF'}
+              <span className={`font-semibold ${localCameraActive && isLocalVideoPublished ? 'text-emerald-400' : cameraSyncing ? 'text-amber-400 animate-pulse' : 'text-red-400'}`}>
+                {localCameraActive && isLocalVideoPublished ? 'ON' : cameraSyncing ? 'SYNCING' : 'OFF'}
               </span>
             </div>
             <div className="flex items-center justify-between gap-2.5">
               <span className="text-zinc-500">Microphone:</span>
-              <span className={`font-semibold ${isMicrophoneEnabled && isLocalAudioPublished ? 'text-emerald-400' : 'text-red-400'}`}>
-                {isMicrophoneEnabled && isLocalAudioPublished ? 'ON' : 'MUTED'}
+              <span className={`font-semibold ${localMicActive && isLocalAudioPublished ? 'text-emerald-400' : micSyncing ? 'text-amber-400 animate-pulse' : 'text-red-400'}`}>
+                {localMicActive && isLocalAudioPublished ? 'ON' : micSyncing ? 'SYNCING' : 'MUTED'}
               </span>
             </div>
             <div className="flex items-center justify-between gap-2.5">
@@ -534,10 +689,20 @@ function MediaGrid({
         {/* Remote Participant Tile */}
         <div className="relative rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800 flex items-center justify-center">
           {remoteParticipant ? (
-            remoteParticipant.isCameraEnabled && remoteVideoTrackRef ? (
-              <div className="w-full h-full [&>video]:object-cover relative">
-                <VideoTrack trackRef={remoteVideoTrackRef} className="w-full h-full object-cover" />
-              </div>
+            remoteParticipant.isCameraEnabled ? (
+              remoteVideoTrackRef ? (
+                <div className="w-full h-full [&>video]:object-cover relative">
+                  <VideoTrack trackRef={remoteVideoTrackRef} className="w-full h-full object-cover" />
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none gap-2">
+                  <svg className="w-8 h-8 animate-spin text-violet-500" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-400">Loading feed...</span>
+                </div>
+              )
             ) : (
               <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none">
                 <svg className="w-12 h-12 mb-2 text-zinc-750" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -608,24 +773,56 @@ function MediaGrid({
           
           <button
             onClick={handleToggleMute}
-            className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all active:scale-95 ${
-              isMicrophoneEnabled
+            disabled={micSyncing}
+            className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all active:scale-95 flex items-center gap-1.5 ${
+              micSyncing
+                ? 'bg-zinc-800/50 border-zinc-700/50 text-zinc-500 cursor-not-allowed'
+                : localMicActive
                 ? 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-750'
                 : 'bg-red-950/40 border-red-900/30 text-red-400 hover:bg-red-900/20'
             }`}
           >
-            {isMicrophoneEnabled ? '🟢 Mic On' : '🔴 Mic Muted'}
+            {micSyncing ? (
+              <>
+                <svg className="w-3 h-3 animate-spin text-zinc-500" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                <span>Syncing...</span>
+              </>
+            ) : localMicActive ? (
+              '🟢 Mic On'
+            ) : (
+              '🔴 Mic Muted'
+            )}
           </button>
+          
           <button
             onClick={handleToggleCamera}
-            className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all active:scale-95 ${
-              isCameraEnabled
+            disabled={cameraSyncing}
+            className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all active:scale-95 flex items-center gap-1.5 ${
+              cameraSyncing
+                ? 'bg-zinc-800/50 border-zinc-700/50 text-zinc-500 cursor-not-allowed'
+                : localCameraActive
                 ? 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-750'
                 : 'bg-red-950/40 border-red-900/30 text-red-400 hover:bg-red-900/20'
             }`}
           >
-            {isCameraEnabled ? '🟢 Camera On' : '🔴 Camera Off'}
+            {cameraSyncing ? (
+              <>
+                <svg className="w-3 h-3 animate-spin text-zinc-500" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                <span>Syncing...</span>
+              </>
+            ) : localCameraActive ? (
+              '🟢 Camera On'
+            ) : (
+              '🔴 Camera Off'
+            )}
           </button>
+          
           <button
             onClick={handleLeaveCall}
             className="px-3 py-1.5 rounded-lg bg-red-950/50 hover:bg-red-900/30 text-red-400 border border-red-900/30 text-xs font-semibold transition-all active:scale-95"
@@ -660,10 +857,10 @@ function MediaGrid({
               return (
                 <div key={p.sid} className="space-y-0.5">
                   <div className="text-zinc-300 font-semibold">{p.identity} ({p.sid}):</div>
-                  <div className="pl-3 text-zinc-500">
+                  <div className="pl-3 text-zinc-505">
                     - Video: {videoTracks.map(t => `${t.trackSid} (Subscribed: ${t.isSubscribed ? 'Yes' : 'No'}, Muted: ${t.isMuted ? 'Yes' : 'No'})`).join(', ') || 'None'}
                   </div>
-                  <div className="pl-3 text-zinc-500">
+                  <div className="pl-3 text-zinc-505">
                     - Audio: {audioTracks.map(t => `${t.trackSid} (Subscribed: ${t.isSubscribed ? 'Yes' : 'No'}, Muted: ${t.isMuted ? 'Yes' : 'No'})`).join(', ') || 'None'}
                   </div>
                 </div>
