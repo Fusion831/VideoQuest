@@ -113,13 +113,22 @@ export const apiClient = {
     return fetchJson<Session>(`/sessions/${sessionId}`);
   },
 
-  async endSession(sessionId: string, agentId: string): Promise<Session> {
+  async endSession(
+    sessionId: string,
+    agentId: string,
+    resolutionStatus?: string,
+    resolutionNotes?: string
+  ): Promise<Session> {
     return fetchJson<Session>(`/sessions/${sessionId}/end`, {
       method: 'POST',
       headers: {
         'X-User-ID': agentId,
         'X-User-Role': 'agent',
       },
+      body: JSON.stringify({
+        resolution_status: resolutionStatus,
+        resolution_notes: resolutionNotes,
+      }),
     });
   },
 

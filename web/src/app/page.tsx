@@ -15,10 +15,10 @@ export default function Home() {
             VQ
           </div>
           <h1 className="text-4xl font-extrabold tracking-tight bg-gradient-to-r from-zinc-50 to-zinc-400 bg-clip-text text-transparent sm:text-5xl">
-            VideoQuest Room Portal
+            VideoQuest Workspace
           </h1>
           <p className="text-sm text-zinc-400 leading-relaxed max-w-sm mx-auto">
-            Developer integration suite for checking real-time session state machines, presence lifecycles, and event streams.
+            Professional support consultation portal for real-time customer engagement and remote video consultations.
           </p>
         </div>
 
@@ -38,17 +38,17 @@ export default function Home() {
 
           <div className="p-6 rounded-2xl bg-zinc-900/40 border border-zinc-850 shadow-lg text-left flex flex-col justify-between h-36">
             <div>
-              <span className="text-xs font-semibold uppercase tracking-wider text-zinc-600">Client Access</span>
+              <span className="text-xs font-semibold uppercase tracking-wider text-zinc-650">Client Access</span>
               <h3 className="font-bold text-lg text-zinc-500 mt-1">Customer Join</h3>
             </div>
             <p className="text-[11px] text-zinc-600 leading-normal">
-              Customers join dynamically using the secure invite token generated from the agent dashboard.
+              Customers join dynamically using the secure invite link generated from the agent dashboard.
             </p>
           </div>
         </div>
 
         <div className="border-t border-zinc-900 pt-6 max-w-xs mx-auto">
-          <span className="text-[10px] uppercase font-semibold tracking-widest text-zinc-600">VideoQuest Gateway v0.1.0</span>
+          <span className="text-[10px] uppercase font-semibold tracking-widest text-zinc-650">VideoQuest Consultation Platform</span>
         </div>
       </div>
     </div>

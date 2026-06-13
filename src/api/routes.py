@@ -30,6 +30,7 @@ from src.api.schemas import (
     LiveKitTokenResponse,
     LoginRequest,
     LoginResponse,
+    SessionEndRequest,
 )
 from src.api.dependencies import get_session_service, get_participant_service, get_chat_service, get_current_identity, get_db_session
 from src.services.session_service import SessionService
@@ -112,12 +113,20 @@ async def validate_invite(
 @router.post("/{session_id}/end", response_model=SessionResponse)
 async def end_session(
     session_id: uuid.UUID,
+    request: Optional[SessionEndRequest] = None,
     identity: Identity = Depends(get_current_identity),
     service: SessionService = Depends(get_session_service),
 ):
     """End the session (transitions status to ENDED). This endpoint is idempotent."""
+    resolution_status = request.resolution_status if request else None
+    resolution_notes = request.resolution_notes if request else None
     try:
-        session = await service.end_session(session_id, initiator=identity)
+        session = await service.end_session(
+            session_id,
+            initiator=identity,
+            resolution_status=resolution_status,
+            resolution_notes=resolution_notes
+        )
         return session
     except SessionNotFound as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)

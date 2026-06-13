@@ -9,6 +9,72 @@ interface ChatPanelProps {
   onSendMessage: (content: string) => void;
 }
 
+export const translateSystemMessage = (content: string): string => {
+  const text = content.trim().toLowerCase();
+  
+  if (text.includes("joined the session") || text.includes("joined the conversation")) {
+    if (text.includes("agent")) {
+      return "Agent joined the conversation";
+    }
+    if (text.includes("customer")) {
+      return "Customer joined the conversation";
+    }
+    return "Agent joined the conversation";
+  }
+  
+  if (text.includes("left the session") || text.includes("left the conversation")) {
+    if (text.includes("agent")) {
+      return "Agent left the conversation";
+    }
+    if (text.includes("customer")) {
+      return "Customer left the conversation";
+    }
+    return "Customer left the conversation";
+  }
+
+  if (text.includes("disconnected") || text.includes("connection lost")) {
+    if (text.includes("agent")) {
+      return "Agent left the conversation";
+    }
+    if (text.includes("customer")) {
+      return "Customer left the conversation";
+    }
+    return "Connection interrupted";
+  }
+
+  if (text.includes("reconnected")) {
+    if (text.includes("agent")) {
+      return "Agent joined the conversation";
+    }
+    if (text.includes("customer")) {
+      return "Customer joined the conversation";
+    }
+    return "Connection restored";
+  }
+
+  if (text.includes("support session started") || text.includes("session active") || text.includes("connection established")) {
+    return "Support session started";
+  }
+
+  if (text.includes("video consultation started") || text.includes("video started")) {
+    return "Video consultation started";
+  }
+
+  if (text.includes("video consultation ended") || text.includes("video stopped")) {
+    return "Video consultation ended";
+  }
+
+  if (text.includes("support session abandoned")) {
+    return "Support session paused";
+  }
+
+  if (text.includes("support session resumed")) {
+    return "Support session started";
+  }
+
+  return content;
+};
+
 export default function ChatPanel({
   messages,
   participants,
@@ -39,27 +105,31 @@ export default function ChatPanel({
   const getSenderName = (senderId: string | null) => {
     if (!senderId) return 'System';
     const participant = participants.find((p) => p.id === senderId);
-    if (!participant) return `User (${senderId.substring(0, 4)})`;
-    return `${participant.user_id} (${participant.role})`;
+    if (!participant) return 'Participant';
+    return participant.role.toLowerCase() === 'agent' ? 'Support Agent' : participant.user_id;
   };
 
   return (
-    <div className="flex flex-col h-[500px] rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30 overflow-hidden">
+    <div className="flex flex-col h-[580px] rounded-2xl bg-zinc-900/50 border border-zinc-800/80 backdrop-blur-sm shadow-2xl overflow-hidden">
       {/* Header */}
-      <div className="px-6 py-4 border-b border-zinc-800/80 bg-zinc-900/50 flex items-center justify-between">
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">
-          Chat Room
+      <div className="px-6 py-4 border-b border-zinc-800/80 bg-zinc-900/80 flex items-center justify-between">
+        <h3 className="text-sm font-semibold tracking-wide text-zinc-350 flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+          Live Conversation
         </h3>
-        <span className="text-[10px] bg-zinc-950 px-2 py-0.5 rounded text-zinc-500 font-mono">
-          {messages.length} messages
+        <span className="text-xs text-zinc-500 font-medium">
+          {messages.filter(m => m.message_type !== 'SYSTEM').length} messages
         </span>
       </div>
 
       {/* Messages Feed */}
-      <div className="flex-1 p-6 overflow-y-auto space-y-4 scrollbar-thin">
+      <div className="flex-1 p-6 overflow-y-auto space-y-6 scrollbar-thin">
         {messages.length === 0 ? (
-          <div className="h-full flex items-center justify-center text-xs text-zinc-500 italic">
-            No messages yet. Send a message to start the conversation.
+          <div className="h-full flex flex-col items-center justify-center text-sm text-zinc-500 italic space-y-2">
+            <svg className="w-8 h-8 text-zinc-650" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+            <span>Your conversation starts here.</span>
           </div>
         ) : (
           messages.map((msg) => {
@@ -68,9 +138,9 @@ export default function ChatPanel({
 
             if (isSystem) {
               return (
-                <div key={msg.id} className="flex justify-center my-2">
-                  <div className="px-3 py-1 rounded-full bg-zinc-950/60 border border-zinc-800/40 text-[10px] text-zinc-500 italic max-w-xs text-center">
-                    {msg.content}
+                <div key={msg.id} className="flex justify-center my-4">
+                  <div className="px-4 py-1.5 rounded-full bg-zinc-950/40 border border-zinc-900/60 text-xs text-zinc-500 font-medium tracking-wide max-w-sm text-center">
+                    {translateSystemMessage(msg.content)}
                   </div>
                 </div>
               );
@@ -79,21 +149,21 @@ export default function ChatPanel({
             return (
               <div
                 key={msg.id}
-                className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
+                className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} space-y-1.5`}
               >
-                <span className="text-[10px] text-zinc-500 mb-1 px-1">
-                  {getSenderName(msg.sender_participant_id)}
+                <span className="text-xs text-zinc-500 font-medium px-2">
+                  {isMe ? 'You' : getSenderName(msg.sender_participant_id)}
                 </span>
                 <div
-                  className={`max-w-[80%] rounded-2xl px-4 py-2 text-xs leading-relaxed ${
+                  className={`max-w-[75%] rounded-2xl px-5 py-3 text-sm leading-relaxed shadow-sm ${
                     isMe
-                      ? 'bg-indigo-600 text-white rounded-tr-none'
-                      : 'bg-zinc-800 text-zinc-200 rounded-tl-none'
+                      ? 'bg-purple-600 text-zinc-100 rounded-tr-none'
+                      : 'bg-zinc-800 text-zinc-200 rounded-tl-none border border-zinc-750'
                   }`}
                 >
                   {msg.content}
                 </div>
-                <span className="text-[9px] text-zinc-600 mt-1 px-1">
+                <span className="text-[10px] text-zinc-600 px-2 font-medium">
                   {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
               </div>
@@ -104,18 +174,18 @@ export default function ChatPanel({
       </div>
 
       {/* Footer / MessageComposer */}
-      <div className="p-4 border-t border-zinc-800/80 bg-zinc-900/50">
+      <div className="p-4 border-t border-zinc-800/80 bg-zinc-900/80">
         {isReadOnly ? (
-          <div className="py-2 px-3 rounded-lg bg-zinc-950/40 border border-zinc-800 text-center text-xs text-zinc-500">
-            ⚠️ Chat history is read-only (Session has ended)
+          <div className="py-2.5 px-4 rounded-xl bg-zinc-950/40 border border-zinc-900/60 text-center text-xs text-zinc-500 font-medium">
+            This support session has ended
           </div>
         ) : isAbandoned ? (
-          <div className="py-2 px-3 rounded-lg bg-amber-950/40 border border-amber-800/40 text-center text-xs text-amber-400">
-            ⏳ Session abandoned — waiting for reconnect. Chat paused.
+          <div className="py-2.5 px-4 rounded-xl bg-zinc-950/40 border border-zinc-900/60 text-center text-xs text-zinc-400 font-medium animate-pulse">
+            Connection lost. Attempting to reconnect...
           </div>
         ) : isNotJoined ? (
-          <div className="py-2 px-3 rounded-lg bg-zinc-950/40 border border-zinc-800 text-center text-xs text-indigo-400">
-            Join the session to start chatting
+          <div className="py-2.5 px-4 rounded-xl bg-zinc-950/40 border border-zinc-900/60 text-center text-xs text-purple-400 font-medium">
+            Connecting to session...
           </div>
         ) : (
           <form onSubmit={handleSend} className="flex gap-2">
@@ -124,12 +194,12 @@ export default function ChatPanel({
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               placeholder="Type your message..."
-              className="flex-1 px-4 py-2 rounded-xl bg-zinc-950 border border-zinc-800 text-xs text-zinc-100 placeholder-zinc-600 outline-none focus:border-indigo-500/80 transition-all"
+              className="flex-1 px-4 py-3 rounded-xl bg-zinc-950 border border-zinc-850 text-sm text-zinc-100 placeholder-zinc-600 outline-none focus:border-purple-500/80 transition-all"
             />
             <button
               type="submit"
               disabled={!inputText.trim()}
-              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-xs font-semibold shadow-md active:scale-95 transition-all shrink-0"
+              className="px-5 py-3 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:bg-zinc-800 disabled:text-zinc-600 text-white text-sm font-medium shadow-md active:scale-98 transition-all shrink-0 cursor-pointer"
             >
               Send
             </button>

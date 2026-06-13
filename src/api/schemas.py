@@ -94,4 +94,10 @@ class LoginResponse(BaseModel):
     role: str
 
 
+class SessionEndRequest(BaseModel):
+    resolution_status: Optional[str] = None
+    resolution_notes: Optional[str] = None
+
+
+
 

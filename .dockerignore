@@ -1,0 +1,12 @@
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.git
+.env
+tests
+Dockerfile*
+docker-compose*
+*.docx
+HANDOFF.md
+web

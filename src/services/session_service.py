@@ -82,7 +82,13 @@ class SessionService:
             
         return session
 
-    async def end_session(self, session_id: uuid.UUID, initiator: Identity) -> DomainSession:
+    async def end_session(
+        self,
+        session_id: uuid.UUID,
+        initiator: Identity,
+        resolution_status: Optional[str] = None,
+        resolution_notes: Optional[str] = None,
+    ) -> DomainSession:
         """Transition session to ENDED status and record SESSION_ENDED event.
 
         This operation is idempotent. If the session has already ended:
@@ -111,6 +117,32 @@ class SessionService:
 
             if state_changed:
                 saved_session = await self.session_repo.save(session)
+
+                # Record resolution event first if specified
+                if resolution_status:
+                    res_metadata = {
+                        "notes": resolution_notes or "",
+                        "status": resolution_status,
+                        "recorded_by": initiator.user_id,
+                    }
+                    if resolution_status.lower() == "resolved":
+                        res_event = DomainSessionEvent(
+                            session_id=saved_session.id,
+                            event_type=SessionEventType.ISSUE_RESOLVED,
+                            metadata=res_metadata,
+                        )
+                        await self.event_repo.save(res_event)
+                        res_payload = await flush_system_message(self.db_session, session_id, "Issue resolved")
+                        pending_broadcasts.append((session_id, res_payload))
+                    else:
+                        res_event = DomainSessionEvent(
+                            session_id=saved_session.id,
+                            event_type=SessionEventType.FOLLOW_UP_REQUESTED,
+                            metadata=res_metadata,
+                        )
+                        await self.event_repo.save(res_event)
+                        res_payload = await flush_system_message(self.db_session, session_id, "Follow-up requested")
+                        pending_broadcasts.append((session_id, res_payload))
 
                 # Record ending event (append-only)
                 event = DomainSessionEvent(

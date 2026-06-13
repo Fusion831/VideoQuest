@@ -19,6 +19,8 @@ interface MediaRoomProps {
   userId: string;
   role: 'agent' | 'customer';
   sessionStatus: string;
+  onShareSupportLink?: () => void;
+  onEndSupportSession?: () => void;
 }
 
 const ROOM_OPTIONS = {
@@ -34,7 +36,14 @@ const ROOM_OPTIONS = {
   }
 };
 
-export default function MediaRoom({ sessionId, userId, role, sessionStatus }: MediaRoomProps) {
+export default function MediaRoom({
+  sessionId,
+  userId,
+  role,
+  sessionStatus,
+  onShareSupportLink,
+  onEndSupportSession,
+}: MediaRoomProps) {
   const recordTiming = (event: string) => {
     if (typeof window === 'undefined') return;
     const w = window as any;
@@ -594,6 +603,8 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
           setIsMicrophonePreConnected={setIsMicrophonePreConnected}
           handleReconnectMedia={handleReconnectMedia}
           onConnected={() => {}}
+          onShareSupportLink={onShareSupportLink}
+          onEndSupportSession={onEndSupportSession}
         />
         <RoomAudioRenderer />
       </LiveKitRoom>
@@ -604,7 +615,7 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
 function getConnectionLabel(state: string) {
   switch (state.toUpperCase()) {
     case 'CONNECTED':
-      return { label: 'Media Connected', color: 'bg-emerald-500', emoji: '🟢' };
+      return { label: 'Video Consultation Connected', color: 'bg-emerald-500', emoji: '🟢' };
     case 'CONNECTING':
       return { label: 'Connecting', color: 'bg-amber-500 animate-pulse', emoji: '🟡' };
     case 'RECONNECTING':
@@ -613,7 +624,7 @@ function getConnectionLabel(state: string) {
       return { label: 'Connection Failed', color: 'bg-red-500 animate-pulse', emoji: '❌' };
     case 'DISCONNECTED':
     default:
-      return { label: 'Media Offline', color: 'bg-red-500', emoji: '🔴' };
+      return { label: 'Offline', color: 'bg-red-500', emoji: '🔴' };
   }
 }
 
@@ -650,6 +661,8 @@ function MediaGrid({
   setIsMicrophonePreConnected,
   handleReconnectMedia,
   onConnected,
+  onShareSupportLink,
+  onEndSupportSession,
 }: {
   role: 'agent' | 'customer';
   isCameraPreConnected: boolean;
@@ -658,6 +671,8 @@ function MediaGrid({
   setIsMicrophonePreConnected: (val: boolean) => void;
   handleReconnectMedia: () => Promise<void>;
   onConnected: () => void;
+  onShareSupportLink?: () => void;
+  onEndSupportSession?: () => void;
 }) {
   const tracks = useTracks(
     [
@@ -942,34 +957,30 @@ function MediaGrid({
     room?.disconnect();
   };
 
+  const remoteParticipantName = remoteParticipant?.name || 'Customer';
+
   return (
-    <div className="flex-1 flex flex-col h-full min-h-0 bg-zinc-905">
-      <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 min-h-[300px] bg-zinc-950/40">
+    <div className="flex-1 flex flex-col h-full min-h-0 bg-zinc-900">
+      <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 min-h-[300px] bg-zinc-950/30">
         
-        {/* 1. Local Participant Tile (Always Visible) */}
-        <div className="relative rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800 flex items-center justify-center">
+        {/* 1. Local Participant Tile */}
+        <div className="relative rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800 flex items-center justify-center shadow-lg">
           {localVideoTrackRef && (
             <div className={`w-full h-full [&>video]:object-cover absolute inset-0 z-10 ${!localCameraActive ? 'hidden' : ''}`}>
               <VideoTrack trackRef={localVideoTrackRef} className="w-full h-full object-cover scale-x-[-1]" />
-              <LocalVideoTileDiagnostic
-                identity={localParticipant?.identity || 'unknown'}
-                sid={localParticipant?.sid || 'unknown'}
-                trackSid={localVideoTrackRef?.publication?.trackSid || localVideoTrackRef?.track?.sid || 'unknown'}
-                isPublished={isLocalVideoPublished}
-              />
             </div>
           )}
           
           {!localCameraActive ? (
-            <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none z-0">
-              <svg className="w-12 h-12 mb-2 text-zinc-750" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/40 w-full h-full select-none z-0">
+              <svg className="w-10 h-10 mb-2 text-zinc-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14" />
               </svg>
-              <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-500">🔴 Camera Off</span>
+              <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-650">Camera Off</span>
             </div>
           ) : !localVideoTrackRef && (
-            <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none gap-2 z-0">
-              <svg className="w-8 h-8 animate-spin text-indigo-500" fill="none" viewBox="0 0 24 24">
+            <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/40 w-full h-full select-none gap-2 z-0">
+              <svg className="w-6 h-6 animate-spin text-purple-500" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
@@ -977,30 +988,17 @@ function MediaGrid({
             </div>
           )}
 
-          {/* 4. Participant Media Status Overlay (Local) */}
-          <div className="absolute top-3 left-3 bg-zinc-950/90 border border-zinc-800/80 rounded-lg p-2.5 text-[10px] text-zinc-300 space-y-1.5 backdrop-blur-sm shadow-xl min-w-[120px] z-10 select-none">
-            <div className="font-bold text-indigo-400 uppercase tracking-wider border-b border-zinc-800/50 pb-0.5">You ({role})</div>
-            <div className="flex items-center justify-between gap-2.5">
-              <span className="text-zinc-500">Camera:</span>
-              <span className={`font-semibold ${localCameraActive && isLocalVideoPublished ? 'text-emerald-400' : cameraSyncing ? 'text-amber-400 animate-pulse' : 'text-red-400'}`}>
-                {localCameraActive && isLocalVideoPublished ? 'ON' : cameraSyncing ? 'SYNCING' : 'OFF'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-2.5">
-              <span className="text-zinc-500">Microphone:</span>
-              <span className={`font-semibold ${localMicActive && isLocalAudioPublished ? 'text-emerald-400' : micSyncing ? 'text-amber-400 animate-pulse' : 'text-red-400'}`}>
-                {localMicActive && isLocalAudioPublished ? 'ON' : micSyncing ? 'SYNCING' : 'MUTED'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-2.5">
-              <span className="text-zinc-500">Status:</span>
-              <span className="text-emerald-400 font-semibold">CONNECTED</span>
-            </div>
+          {/* Clean User Tag */}
+          <div className="absolute bottom-3 left-3 bg-zinc-950/80 border border-zinc-800/80 backdrop-blur-md rounded-lg px-3 py-1.5 text-xs text-zinc-200 font-medium z-10 flex items-center gap-2 select-none">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+            <span>You ({role === 'agent' ? 'Support Specialist' : 'Customer'})</span>
+            {!localCameraActive && <span className="text-red-400 font-bold text-[9px] uppercase ml-1.5 px-1 bg-red-950/30 rounded">Camera Off</span>}
+            {!localMicActive && <span className="text-red-400 font-bold text-[9px] uppercase ml-1.5 px-1 bg-red-950/30 rounded">Muted</span>}
           </div>
         </div>
 
-        {/* Remote Participant Tile */}
-        <div className="relative rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800 flex items-center justify-center">
+        {/* 2. Remote Participant Tile */}
+        <div className="relative rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800 flex items-center justify-center shadow-lg">
           {remoteParticipant ? (
             <>
               {remoteVideoTrackRef && (
@@ -1010,189 +1008,111 @@ function MediaGrid({
               )}
               
               {!remoteParticipant.isCameraEnabled ? (
-                <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none z-0">
-                  <svg className="w-12 h-12 mb-2 text-zinc-750" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/40 w-full h-full select-none z-0">
+                  <svg className="w-10 h-10 mb-2 text-zinc-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14" />
                   </svg>
-                  <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-500">🔴 Camera Off</span>
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-650">Camera Off</span>
                 </div>
               ) : !remoteVideoTrackRef && (
-                <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none gap-2 z-0">
-                  <svg className="w-8 h-8 animate-spin text-violet-500" fill="none" viewBox="0 0 24 24">
+                <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/40 w-full h-full select-none gap-2 z-0">
+                  <svg className="w-6 h-6 animate-spin text-purple-500" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
                   <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-400">Loading feed...</span>
                 </div>
               )}
+
+              {/* Clean Remote User Tag */}
+              <div className="absolute bottom-3 left-3 bg-zinc-950/80 border border-zinc-800/80 backdrop-blur-md rounded-lg px-3 py-1.5 text-xs text-zinc-200 font-medium z-10 flex items-center gap-2 select-none">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span>{remoteParticipantName} ({expectedRemoteRole === 'Support Agent' ? 'Support Specialist' : 'Customer'})</span>
+                {!remoteParticipant.isCameraEnabled && <span className="text-red-400 font-bold text-[9px] uppercase ml-1.5 px-1 bg-red-950/30 rounded">Camera Off</span>}
+                {!remoteParticipant.isMicrophoneEnabled && <span className="text-red-400 font-bold text-[9px] uppercase ml-1.5 px-1 bg-red-950/30 rounded">Muted</span>}
+              </div>
             </>
           ) : (
-            /* 5. Remote Participant Waiting State */
-            <div className="flex flex-col items-center justify-center text-zinc-500 text-center px-4 bg-zinc-950/20 w-full h-full select-none">
-              <svg className="w-8 h-8 mb-2 animate-pulse text-indigo-500/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636m3.536 9.192l-3.536 3.536M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-5 0a4 4 0 11-8 0 4 4 0 018 0z" />
+            /* Remote Participant Waiting State */
+            <div className="flex flex-col items-center justify-center text-zinc-550 text-center px-4 bg-zinc-950/10 w-full h-full select-none">
+              <svg className="w-8 h-8 mb-2 animate-pulse text-purple-505" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536" />
               </svg>
               <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-400 block mb-1">
-                Waiting for {expectedRemoteRole} to join...
+                Waiting for {expectedRemoteRole === 'Support Agent' ? 'Support Specialist' : 'Customer'} to join...
               </span>
-              <span className="text-[9px] text-zinc-650 leading-relaxed max-w-[210px]">
-                Waiting for the other participant to establish a media link.
+              <span className="text-[9.5px] text-zinc-600 max-w-[210px] leading-relaxed">
+                The video connection will establish automatically once they open the invite link.
               </span>
-            </div>
-          )}
-
-          {/* 4. Participant Media Status Overlay (Remote) */}
-          {remoteParticipant && (
-            <div className="absolute top-3 left-3 bg-zinc-950/90 border border-zinc-800/80 rounded-lg p-2.5 text-[10px] text-zinc-300 space-y-1.5 backdrop-blur-sm shadow-xl min-w-[120px] z-10 select-none">
-              <div className="font-bold text-violet-400 uppercase tracking-wider border-b border-zinc-800/50 pb-0.5">
-                {remoteParticipant.identity.split('_')[0] || 'User'} ({expectedRemoteRole})
-              </div>
-              <div className="flex items-center justify-between gap-2.5">
-                <span className="text-zinc-500">Camera:</span>
-                <span className={`font-semibold ${remoteParticipant.isCameraEnabled && isRemoteVideoPublished ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {remoteParticipant.isCameraEnabled && isRemoteVideoPublished ? 'ON' : 'OFF'}
-                </span>
-              </div>
-              <div className="flex items-center justify-between gap-2.5">
-                <span className="text-zinc-500">Microphone:</span>
-                <span className={`font-semibold ${remoteParticipant.isMicrophoneEnabled && isRemoteAudioPublished ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {remoteParticipant.isMicrophoneEnabled && isRemoteAudioPublished ? 'ON' : 'MUTED'}
-                </span>
-              </div>
-              <div className="flex items-center justify-between gap-2.5">
-                <span className="text-zinc-500">Status:</span>
-                <span className="text-emerald-400 font-semibold">CONNECTED</span>
-              </div>
             </div>
           )}
         </div>
       </div>
 
       {/* Control Panel / Connection Status Bar */}
-      <div className="h-14 bg-zinc-900 border-t border-zinc-850 px-4 flex items-center justify-between min-h-[56px] shrink-0 select-none">
+      <div className="h-16 bg-zinc-900/95 border-t border-zinc-800/80 px-6 flex items-center justify-between shrink-0 select-none">
         <div className="flex items-center gap-2">
           <span className={`w-2 h-2 rounded-full ${conn.color}`} />
-          <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">
-            {conn.emoji} {conn.label}
+          <span className="text-[10.5px] font-bold uppercase tracking-wider text-zinc-400">
+            {conn.label}
           </span>
         </div>
 
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setShowDiagnostics(!showDiagnostics)}
-            className="px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-[10px] font-bold uppercase text-zinc-400 hover:text-zinc-200 transition-all active:scale-95"
-            title="Show system connections metadata"
-          >
-            🛠 Diagnostics
-          </button>
-          
-          <button
-            onClick={handleReconnectMedia}
-            className="px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-[10px] font-bold uppercase text-indigo-400 hover:text-indigo-300 transition-all active:scale-95 flex items-center gap-1.5"
-            title="Force reconnect media stream"
-          >
-            🔄 Reconnect Media
-          </button>
-          
+          {/* Microphone Toggle */}
           <button
             onClick={handleToggleMute}
             disabled={micSyncing}
-            className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all active:scale-95 flex items-center gap-1.5 ${
-              micSyncing
-                ? 'bg-zinc-800/50 border-zinc-700/50 text-zinc-500 cursor-not-allowed'
-                : localMicActive
-                ? 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-750'
-                : 'bg-red-950/40 border-red-900/30 text-red-400 hover:bg-red-900/20'
+            className={`px-4 py-2 rounded-xl border text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer ${
+              !localMicActive
+                ? 'bg-red-950/40 border-red-900/30 text-red-400 hover:bg-red-900/20'
+                : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-750'
             }`}
           >
-            {micSyncing ? (
-              <>
-                <svg className="w-3 h-3 animate-spin text-zinc-500" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                </svg>
-                <span>Syncing...</span>
-              </>
-            ) : localMicActive ? (
-              '🟢 Mic On'
-            ) : (
-              '🔴 Mic Muted'
-            )}
+            {localMicActive ? 'Mute Microphone' : 'Unmute Microphone'}
           </button>
           
+          {/* Camera Toggle */}
           <button
             onClick={handleToggleCamera}
             disabled={cameraSyncing}
-            className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all active:scale-95 flex items-center gap-1.5 ${
-              cameraSyncing
-                ? 'bg-zinc-800/50 border-zinc-700/50 text-zinc-500 cursor-not-allowed'
-                : localCameraActive
-                ? 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-750'
-                : 'bg-red-950/40 border-red-900/30 text-red-400 hover:bg-red-900/20'
+            className={`px-4 py-2 rounded-xl border text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer ${
+              !localCameraActive
+                ? 'bg-red-950/40 border-red-900/30 text-red-400 hover:bg-red-900/20'
+                : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-750'
             }`}
           >
-            {cameraSyncing ? (
-              <>
-                <svg className="w-3 h-3 animate-spin text-zinc-500" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                </svg>
-                <span>Syncing...</span>
-              </>
-            ) : localCameraActive ? (
-              '🟢 Camera On'
-            ) : (
-              '🔴 Camera Off'
-            )}
+            {localCameraActive ? 'Stop Camera' : 'Start Camera'}
           </button>
+
+          {/* Share Support Link (Agent-Only) */}
+          {role === 'agent' && onShareSupportLink && (
+            <button
+              onClick={onShareSupportLink}
+              className="px-4 py-2 rounded-xl bg-purple-950/40 border border-purple-900/30 text-purple-400 text-xs font-semibold hover:bg-purple-900/20 transition-all active:scale-95 cursor-pointer"
+            >
+              Share Support Link
+            </button>
+          )}
           
-          <button
-            onClick={handleLeaveCall}
-            className="px-3 py-1.5 rounded-lg bg-red-950/50 hover:bg-red-900/30 text-red-400 border border-red-900/30 text-xs font-semibold transition-all active:scale-95"
-          >
-            Leave Call
-          </button>
+          {/* End Support Session / Leave Call */}
+          {role === 'agent' && onEndSupportSession ? (
+            <button
+              onClick={onEndSupportSession}
+              className="px-4 py-2 rounded-xl bg-red-950/60 border border-red-900/40 text-red-400 hover:bg-red-900/30 text-xs font-semibold transition-all active:scale-95 cursor-pointer"
+            >
+              End Support Session
+            </button>
+          ) : (
+            <button
+              onClick={handleLeaveCall}
+              className="px-4 py-2 rounded-xl bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs font-semibold hover:bg-zinc-750 transition-all active:scale-95 cursor-pointer"
+            >
+              Leave Call
+            </button>
+          )}
         </div>
       </div>
-
-      {/* 9. Connection Diagnostics Panel */}
-      {showDiagnostics && (
-        <div className="p-4 bg-zinc-950 border-t border-zinc-850 font-mono text-[9px] text-zinc-400 space-y-2 select-none overflow-y-auto max-h-[140px] shrink-0">
-          <div className="font-bold text-zinc-500 uppercase tracking-wider pb-1 border-b border-zinc-900 flex justify-between">
-            <span>Room Diagnostics Panel</span>
-            <span className="text-indigo-400">DEV MODE ACTIVE</span>
-          </div>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-1">
-            <div><span className="text-zinc-650">Room Name:</span> {room?.name || 'N/A'}</div>
-            <div><span className="text-zinc-650">Connection State:</span> {connectionStatus.toUpperCase()}</div>
-            <div><span className="text-zinc-650">Identity:</span> {localParticipant?.identity || 'N/A'}</div>
-            <div><span className="text-zinc-650">Sid:</span> {localParticipant?.sid || 'N/A'}</div>
-            <div><span className="text-zinc-650">Published Video:</span> {isLocalVideoPublished ? '🟢 Active' : '🔴 Muted/Inactive'}</div>
-            <div><span className="text-zinc-650">Published Audio:</span> {isLocalAudioPublished ? '🟢 Active' : '🔴 Muted/Inactive'}</div>
-            <div><span className="text-zinc-650">Video Track:</span> {localVideoPub?.trackSid || 'None'}</div>
-            <div><span className="text-zinc-650">Audio Track:</span> {localAudioPub?.trackSid || 'None'}</div>
-          </div>
-          <div className="pt-2 border-t border-zinc-900">
-            <div className="text-zinc-500 font-bold mb-1">Subscribed Remote Tracks:</div>
-            {participants.filter(p => p.identity !== localParticipant?.identity).map(p => {
-              const videoTracks = Array.from(p.videoTrackPublications.values() as any) as any[];
-              const audioTracks = Array.from(p.audioTrackPublications.values() as any) as any[];
-              return (
-                <div key={p.identity} className="space-y-0.5">
-                  <div className="text-zinc-300 font-semibold">{p.identity} ({p.sid}):</div>
-                  <div className="pl-3 text-zinc-505">
-                    - Video: {videoTracks.map(t => `${t.trackSid} (Subscribed: ${t.isSubscribed ? 'Yes' : 'No'}, Muted: ${t.isMuted ? 'Yes' : 'No'})`).join(', ') || 'None'}
-                  </div>
-                  <div className="pl-3 text-zinc-505">
-                    - Audio: {audioTracks.map(t => `${t.trackSid} (Subscribed: ${t.isSubscribed ? 'Yes' : 'No'}, Muted: ${t.isMuted ? 'Yes' : 'No'})`).join(', ') || 'None'}
-                  </div>
-                </div>
-              );
-            })}
-            {participants.length <= 1 && <div className="text-zinc-605 italic">No remote participants subscribed.</div>}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
