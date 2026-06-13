@@ -11,7 +11,9 @@ from src.core.exceptions import (
     ParticipantAlreadyJoined,
     ParticipantAlreadyLeft,
     InvalidConnectionTransition,
+    PermissionDenied,
 )
+
 from src.core.identity import Identity
 from src.domain.models import (
     DomainSession,
@@ -426,9 +428,14 @@ class ParticipantService:
             await self.db_session.rollback()
             raise
 
-    async def get_session_participants(self, session_id: uuid.UUID) -> List[DomainParticipant]:
+    async def get_session_participants(self, session_id: uuid.UUID, initiator: Identity) -> List[DomainParticipant]:
         """Retrieve all participants currently registered in the session."""
+        try:
+            ParticipantRole(initiator.role.upper())
+        except ValueError:
+            raise PermissionDenied("Unauthorized role to view participants.")
         session = await self.session_repo.get_by_id(session_id)
         if not session:
             raise SessionNotFound(str(session_id))
         return await self.participant_repo.get_by_session_id(session_id)
+

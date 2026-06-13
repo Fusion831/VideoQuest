@@ -52,11 +52,12 @@ async def test_participant_join_flow(db_session):
     assert activated_session.started_at is not None
     
     # Verify events: SESSION_CREATED, PARTICIPANT_JOINED, SESSION_STARTED
-    events = await session_service.get_session_events(session.id)
+    events = await session_service.get_session_events(session.id, initiator=agent_identity)
     assert len(events) == 3
     assert events[0].event_type == SessionEventType.SESSION_CREATED
     assert events[1].event_type == SessionEventType.PARTICIPANT_JOINED
     assert events[2].event_type == SessionEventType.SESSION_STARTED
+
 
     # 2. Customer joins with invite token
     cust_id = "customer_1"
@@ -69,9 +70,10 @@ async def test_participant_join_flow(db_session):
     assert cust_participant.connection_status == ParticipantConnectionStatus.CONNECTED
 
     # Verify events count is now 4 (added PARTICIPANT_JOINED for customer)
-    events = await session_service.get_session_events(session.id)
+    events = await session_service.get_session_events(session.id, initiator=agent_identity)
     assert len(events) == 4
     assert events[3].event_type == SessionEventType.PARTICIPANT_JOINED
+
 
 
 async def test_participant_join_validations(db_session):
@@ -114,8 +116,9 @@ async def test_duplicate_join_and_refresh_handling(db_session):
     
     # Disconnect agent
     await participant_service.disconnect_participant(session.id, p1.id)
-    disconnected_p = await participant_service.get_session_participants(session.id)
+    disconnected_p = await participant_service.get_session_participants(session.id, initiator=agent_identity)
     assert disconnected_p[0].connection_status == ParticipantConnectionStatus.DISCONNECTED
+
     
     # Re-Join (triggers automatic reconnect on join)
     p3 = await participant_service.join_session(session.id, agent_identity)
@@ -123,9 +126,10 @@ async def test_duplicate_join_and_refresh_handling(db_session):
     assert p3.connection_status == ParticipantConnectionStatus.CONNECTED
     
     # Verify PARTICIPANT_RECONNECTED event was created
-    events = await session_service.get_session_events(session.id)
+    events = await session_service.get_session_events(session.id, initiator=agent_identity)
     event_types = [e.event_type for e in events]
     assert SessionEventType.PARTICIPANT_RECONNECTED in event_types
+
 
 
 async def test_participant_leave_flow(db_session):
@@ -141,18 +145,20 @@ async def test_participant_leave_flow(db_session):
     assert left_p.left_at is not None
     
     # Verify event
-    events = await session_service.get_session_events(session.id)
+    events = await session_service.get_session_events(session.id, initiator=agent_identity)
     event_types = [e.event_type for e in events]
     assert SessionEventType.PARTICIPANT_LEFT in event_types
     assert SessionEventType.SESSION_ABANDONED in event_types
     assert SessionEventType.SESSION_ENDED not in event_types
+
     
     # Idempotent leave (should not throw, nor add events)
     left_p_again = await participant_service.leave_session(session.id, p.id)
     assert left_p_again.connection_status == ParticipantConnectionStatus.LEFT
     
-    events_again = await session_service.get_session_events(session.id)
+    events_again = await session_service.get_session_events(session.id, initiator=agent_identity)
     assert len(events) == len(events_again)
+
 
 
 async def test_participant_disconnect_reconnect_flow(db_session):
@@ -199,8 +205,9 @@ async def test_get_session_participants(db_session):
     session = await session_service.create_session(agent_identity)
     
     # Get participants for empty session
-    participants = await participant_service.get_session_participants(session.id)
+    participants = await participant_service.get_session_participants(session.id, initiator=agent_identity)
     assert len(participants) == 0
+
     
     # Agent joins
     p1 = await participant_service.join_session(session.id, agent_identity)
@@ -210,9 +217,10 @@ async def test_get_session_participants(db_session):
     p2 = await participant_service.join_session(session.id, cust_identity, invite_token=session.invite_token)
     
     # List participants
-    participants = await participant_service.get_session_participants(session.id)
+    participants = await participant_service.get_session_participants(session.id, initiator=agent_identity)
     assert len(participants) == 2
     assert {participants[0].id, participants[1].id} == {p1.id, p2.id}
+
 
 
 async def test_participant_transaction_rollback(db_session):
@@ -226,8 +234,9 @@ async def test_participant_transaction_rollback(db_session):
             await participant_service.join_session(session.id, agent_identity)
             
         # Verify no participant was persisted
-        participants = await participant_service.get_session_participants(session.id)
+        participants = await participant_service.get_session_participants(session.id, initiator=agent_identity)
         assert len(participants) == 0
+
         
         # Verify session state was not updated to ACTIVE (remains CREATED)
         s = await session_service.get_session(session.id)

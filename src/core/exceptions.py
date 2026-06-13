@@ -64,3 +64,10 @@ class InvalidConnectionTransition(DomainException):
         self.current_status = current_status
         self.target_status = target_status
 
+
+class PermissionDenied(DomainException):
+    """Raised when a participant or caller lacks permission for an action."""
+    def __init__(self, message: str = "Permission denied"):
+        super().__init__(message)
+
+

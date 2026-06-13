@@ -5,6 +5,8 @@ from typing import Optional
 import uuid
 
 from src.core.exceptions import InvalidStateTransition, InvalidConnectionTransition
+from src.core.identity import ParticipantRole
+
 
 
 class SessionStatus(str, Enum):
@@ -106,9 +108,7 @@ class DomainSession:
         return self.status in (SessionStatus.CREATED, SessionStatus.ACTIVE, SessionStatus.ABANDONED)
 
 
-class ParticipantRole(str, Enum):
-    AGENT = "AGENT"
-    CUSTOMER = "CUSTOMER"
+
 
 
 class ParticipantConnectionStatus(str, Enum):

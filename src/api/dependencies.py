@@ -65,8 +65,9 @@ def get_current_identity(
     x_user_role: Optional[str] = Header(None, alias="X-User-Role"),
 ) -> Identity:
     """Dependency extracting the lightweight Identity from transport headers."""
-    user_id = x_user_id or "default_user"
-    role = x_user_role or "agent"
-    return Identity(user_id=user_id, role=role)
+    user_id = x_user_id or "anonymous"
+    role = x_user_role or "customer"
+    return Identity(user_id=user_id, role=role.upper())
+
 
 

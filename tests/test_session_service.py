@@ -38,8 +38,9 @@ async def test_service_create_session(db_session):
     assert persisted_session.id == session.id
 
     # Verify event was persisted
-    events = await service.get_session_events(session.id)
+    events = await service.get_session_events(session.id, initiator=identity)
     assert len(events) == 1
+
     assert events[0].event_type == SessionEventType.SESSION_CREATED
     assert events[0].metadata.get("agent_id") == agent_id
 
@@ -97,8 +98,9 @@ async def test_service_end_session(db_session):
     assert ended_session.ended_at is not None
 
     # Verify event history
-    events = await service.get_session_events(session.id)
+    events = await service.get_session_events(session.id, initiator=agent_identity)
     assert len(events) == 2
+
     assert events[0].event_type == SessionEventType.SESSION_CREATED
     assert events[1].event_type == SessionEventType.SESSION_ENDED
     assert events[1].metadata.get("ended_by") == "agent_1"
@@ -112,15 +114,17 @@ async def test_service_end_session_idempotent(db_session):
 
     # First end call
     await service.end_session(session.id, agent_identity)
-    events_first = await service.get_session_events(session.id)
+    events_first = await service.get_session_events(session.id, initiator=agent_identity)
     assert len(events_first) == 2  # CREATED and ENDED
+
 
     # Second end call (should be a no-op)
     ended_session = await service.end_session(session.id, agent_identity)
     assert ended_session.status == SessionStatus.ENDED
     
-    events_second = await service.get_session_events(session.id)
+    events_second = await service.get_session_events(session.id, initiator=agent_identity)
     assert len(events_second) == 2  # Verify no duplicate events are created
+
 
 
 async def test_service_list_sessions(db_session):

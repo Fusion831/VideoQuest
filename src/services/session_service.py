@@ -7,11 +7,13 @@ from src.core.exceptions import (
     SessionNotFound,
     InvalidInvite,
     InvalidStateTransition,
+    PermissionDenied,
 )
-from src.core.identity import Identity
+from src.core.identity import Identity, Permission
 from src.domain.models import DomainSession, SessionStatus, ParticipantConnectionStatus
 from src.domain.events import DomainSessionEvent, SessionEventType
 from src.infrastructure.repositories import SessionRepository, SessionEventRepository, ParticipantRepository
+
 
 
 class SessionService:
@@ -33,8 +35,9 @@ class SessionService:
         
         Requires an Agent identity.
         """
-        if creator.role != "agent":
-            raise DomainException("Only agents can create support sessions.")
+        if not creator.has_permission(Permission.CREATE_SESSION):
+            raise PermissionDenied("Only agents can create support sessions.")
+
 
         try:
             session = DomainSession(agent_id=creator.user_id)
@@ -88,7 +91,16 @@ class SessionService:
         try:
             session = await self.session_repo.get_by_id(session_id)
             if not session:
+
                 raise SessionNotFound(str(session_id))
+
+            if not initiator.has_permission(Permission.END_SESSION):
+                raise PermissionDenied("Only agents can end support sessions.")
+
+            if not initiator.user_id.startswith("system_") and session.agent_id != initiator.user_id:
+                raise PermissionDenied("Only the assigned agent can end this support session.")
+
+
 
             # Perform idempotent state transition
             state_changed = session.end()
@@ -164,9 +176,12 @@ class SessionService:
         """Query historical sessions."""
         return await self.session_repo.list_sessions(limit=limit, offset=offset, status=status)
 
-    async def get_session_events(self, session_id: uuid.UUID) -> List[DomainSessionEvent]:
+    async def get_session_events(self, session_id: uuid.UUID, initiator: Identity) -> List[DomainSessionEvent]:
         """Retrieve all events related to a session."""
+        if not initiator.has_permission(Permission.VIEW_DIAGNOSTICS):
+            raise PermissionDenied("Only agents can view diagnostics.")
         session = await self.session_repo.get_by_id(session_id)
         if not session:
             raise SessionNotFound(str(session_id))
         return await self.event_repo.get_by_session_id(session_id)
+

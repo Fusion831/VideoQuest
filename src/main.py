@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.core.logging import setup_logging, logger
 from src.infrastructure.database import Base, engine
-from src.api.routes import router as session_router
+from src.api.routes import router as session_router, auth_router
 
 
 import asyncio

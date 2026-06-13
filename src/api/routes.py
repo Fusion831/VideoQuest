@@ -13,8 +13,10 @@ from src.core.exceptions import (
     ParticipantAlreadyJoined,
     ParticipantAlreadyLeft,
     InvalidConnectionTransition,
+    PermissionDenied,
 )
-from src.core.identity import Identity
+from src.core.identity import Identity, Permission
+
 from src.api.schemas import (
     SessionCreateRequest,
     SessionResponse,
@@ -26,6 +28,8 @@ from src.api.schemas import (
     ParticipantResponse,
     ChatMessageResponse,
     LiveKitTokenResponse,
+    LoginRequest,
+    LoginResponse,
 )
 from src.api.dependencies import get_session_service, get_participant_service, get_chat_service, get_current_identity, get_db_session
 from src.services.session_service import SessionService
@@ -52,14 +56,15 @@ async def create_session(
     """Create a new session."""
     # Use headers if available, otherwise align with request body for backward compatibility
     creator = identity
-    if identity.user_id == "default_user" and request.agent_id:
-        creator = Identity(user_id=request.agent_id, role="agent")
+    if identity.user_id in ("default_user", "anonymous") and request.agent_id:
+        creator = Identity(user_id=request.agent_id, role="AGENT")
         
     try:
         session = await service.create_session(creator=creator)
         return session
     except DomainException as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e.message))
+
 
 
 @router.get("/", response_model=SessionListResponse)
@@ -123,14 +128,18 @@ async def end_session(
 @router.get("/{session_id}/events", response_model=list[SessionEventResponse])
 async def get_session_events(
     session_id: uuid.UUID,
+    identity: Identity = Depends(get_current_identity),
     service: SessionService = Depends(get_session_service),
 ):
     """Query persisted events for a specific session."""
     try:
-        events = await service.get_session_events(session_id)
+        events = await service.get_session_events(session_id, initiator=identity)
         return events
     except SessionNotFound as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    except DomainException as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e.message))
+
 
 
 @router.post("/{session_id}/participants/join", response_model=ParticipantResponse)
@@ -245,14 +254,18 @@ async def reconnect_participant(
 @router.get("/{session_id}/participants", response_model=list[ParticipantResponse])
 async def get_session_participants(
     session_id: uuid.UUID,
+    identity: Identity = Depends(get_current_identity),
     service: ParticipantService = Depends(get_participant_service),
 ):
     """Query all participants in a given session."""
     try:
-        participants = await service.get_session_participants(session_id=session_id)
+        participants = await service.get_session_participants(session_id=session_id, initiator=identity)
         return participants
     except SessionNotFound as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    except DomainException as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e.message))
+
 
 
 @router.get("/{session_id}/messages", response_model=List[ChatMessageResponse])
@@ -260,14 +273,18 @@ async def list_session_messages(
     session_id: uuid.UUID,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    identity: Identity = Depends(get_current_identity),
     service: ChatService = Depends(get_chat_service),
 ):
     """Retrieve historical messages for a session chronologically."""
     try:
-        messages = await service.get_messages(session_id, limit=limit, offset=offset)
+        messages = await service.get_messages(session_id, initiator=identity, limit=limit, offset=offset)
         return messages
     except SessionNotFound as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    except DomainException as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e.message))
+
 
 
 @router.get("/{session_id}/livekit-token", response_model=LiveKitTokenResponse)
@@ -293,6 +310,13 @@ async def get_livekit_token(
             detail=f"Session is in {session.status.value} status. Media is only available when the session is ACTIVE."
         )
 
+    # 2.5 Validate JOIN_CALL permission
+    if not identity.has_permission(Permission.JOIN_CALL):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission denied to join call"
+        )
+
     # 3. Validate Participant
     participant_repo = ParticipantRepository(db_session)
     role_val = identity.role.upper()
@@ -302,6 +326,7 @@ async def get_livekit_token(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Participant does not belong to this session"
         )
+
 
     # 4. Check if Participant Left
     if participant.connection_status == ParticipantConnectionStatus.LEFT:
@@ -449,11 +474,14 @@ async def websocket_endpoint(
                         
                         try:
                             # Create and save message
+                            initiator = Identity(user_id=participant.user_id, role=participant.role.value)
                             msg = await chat_service.create_message(
                                 session_id=session_id,
                                 content=content,
+                                initiator=initiator,
                                 sender_participant_id=participant_id,
                             )
+
                             # Broadcast MESSAGE_RECEIVED event to the entire session
                             await ws_manager.broadcast_to_session(
                                 str(session_id),
@@ -513,4 +541,23 @@ async def websocket_endpoint(
                 # (system chat messages + session ABANDONED transition).
                 # Do NOT add extra broadcast calls here to avoid duplicate events.
                 await participant_service.disconnect_participant(session_id, participant_id)
+
+
+auth_router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+@auth_router.post("/login", response_model=LoginResponse)
+async def login(request: LoginRequest):
+    if request.username == "demo_agent" and request.password == "demo123":
+        return LoginResponse(
+            status="success",
+            token="demo_agent_session_token_12345",
+            user_id="demo_agent",
+            role="AGENT"
+        )
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid username or password"
+    )
+
 

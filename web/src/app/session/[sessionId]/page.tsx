@@ -27,22 +27,45 @@ export default function SessionRoomPage({ params }: PageProps) {
   
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [copySuccess, setCopySuccess] = useState(false);
+  const [autoJoinAttempted, setAutoJoinAttempted] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
 
-  // Simulation controls state
-  const [simUserId, setSimUserId] = useState(currentUserId || 'user_sim');
-  const [simRole, setSimRole] = useState<'agent' | 'customer'>(currentRole || 'agent');
-  const [simInviteToken, setSimInviteToken] = useState('');
-  const [copySuccess, setCopySuccess] = useState(false);
+  const storedIdentityKey = `vq_identity_${sessionId}`;
+
+  // UX1 fix: resolve identity from URL params first, fall back to localStorage
+  const [resolvedUserId, setResolvedUserId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return currentUserId;
+    return currentUserId || localStorage.getItem(`${storedIdentityKey}_userId`);
+  });
+  const [resolvedRole, setResolvedRole] = useState<'agent' | 'customer' | null>(() => {
+    if (typeof window === 'undefined') return currentRole;
+    const stored = localStorage.getItem(`${storedIdentityKey}_role`) as 'agent' | 'customer' | null;
+    return currentRole || stored;
+  });
+
+  // Keep state and localStorage in sync if URL query parameters exist
+  useEffect(() => {
+    if (currentUserId && currentRole) {
+      setResolvedUserId(currentUserId);
+      setResolvedRole(currentRole);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(`${storedIdentityKey}_userId`, currentUserId);
+        localStorage.setItem(`${storedIdentityKey}_role`, currentRole);
+      }
+    }
+  }, [currentUserId, currentRole, storedIdentityKey]);
+
+  // Find current participant ID from the loaded participants list
+  const currentParticipant = participants.find(
+    (p) => p.user_id === resolvedUserId && p.role.toLowerCase() === resolvedRole?.toLowerCase()
+  );
+  const currentParticipantId = currentParticipant?.id || null;
 
   // Fetch all room data
   const refreshRoomData = async () => {
-    if (!sessionId) {
-      console.log('[refreshRoomData] Bypassed: no sessionId');
-      return;
-    }
-    console.log('[refreshRoomData] Start syncing room data...');
+    if (!sessionId) return;
     try {
       const [sessionRes, participantsRes, eventsRes, chatMessagesRes] = await Promise.all([
         apiClient.getSession(sessionId),
@@ -50,13 +73,6 @@ export default function SessionRoomPage({ params }: PageProps) {
         apiClient.getSessionEvents(sessionId),
         apiClient.getChatMessages(sessionId),
       ]);
-      console.log('[refreshRoomData] Success. Data retrieved:', {
-        sessionStatus: sessionRes.status,
-        participantsCount: participantsRes.length,
-        participants: participantsRes.map(p => ({ id: p.id, user_id: p.user_id, role: p.role, connection_status: p.connection_status })),
-        eventsCount: eventsRes.length,
-        chatMessagesCount: chatMessagesRes.length
-      });
       setSession(sessionRes);
       setParticipants(participantsRes);
       setEvents(eventsRes.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()));
@@ -70,46 +86,41 @@ export default function SessionRoomPage({ params }: PageProps) {
     }
   };
 
-  // UX1 fix: resolve identity from URL params first, fall back to localStorage
-  const storedIdentityKey = `vq_identity_${sessionId}`;
-  const [resolvedUserId, setResolvedUserId] = useState<string | null>(() => {
-    if (typeof window === 'undefined') return currentUserId;
-    return currentUserId || localStorage.getItem(`${storedIdentityKey}_userId`);
-  });
-  const [resolvedRole, setResolvedRole] = useState<'agent' | 'customer' | null>(() => {
-    if (typeof window === 'undefined') return currentRole;
-    const stored = localStorage.getItem(`${storedIdentityKey}_role`) as 'agent' | 'customer' | null;
-    return currentRole || stored;
-  });
-
-  // Find current participant ID from the loaded participants list
-  const currentParticipant = participants.find(
-    (p) => p.user_id === resolvedUserId && p.role.toLowerCase() === resolvedRole?.toLowerCase()
-  );
-  const currentParticipantId = currentParticipant?.id || null;
-
-  // Log runtime state audit variables
-  console.log('[SessionRoomPage] Audit Logs:', {
-    resolvedUserId,
-    resolvedRole,
-    currentParticipantId,
-    sessionStatus: session?.status || 'CREATED',
-    mediaRoomMounted: resolvedUserId && resolvedRole ? 'YES' : 'NO',
-  });
-
-  // Persist participant identity to localStorage whenever we successfully identify ourselves
-  useEffect(() => {
-    if (resolvedUserId && resolvedRole && typeof window !== 'undefined') {
-      localStorage.setItem(`${storedIdentityKey}_userId`, resolvedUserId);
-      localStorage.setItem(`${storedIdentityKey}_role`, resolvedRole);
-    }
-  }, [resolvedUserId, resolvedRole, storedIdentityKey]);
-
   // Fetch room data on mount or sessionId change
   useEffect(() => {
     refreshRoomData();
   }, [sessionId]);
 
+  // Self-healing Auto-join flow: Join automatically if resolved identity is present but not in the roster
+  useEffect(() => {
+    if (loading || !session || session.status === 'ENDED' || autoJoinAttempted) return;
+    if (!resolvedUserId || !resolvedRole) return;
+
+    const exists = participants.some(
+      (p) => p.user_id === resolvedUserId && p.role.toLowerCase() === resolvedRole.toLowerCase()
+    );
+
+    if (!exists) {
+      console.log(`[AutoJoin] Participant ${resolvedUserId} (${resolvedRole}) not found in roster. Joining...`);
+      setAutoJoinAttempted(true);
+      apiClient.joinSession(
+        sessionId,
+        resolvedUserId,
+        resolvedRole,
+        resolvedRole === 'customer' ? session.invite_token : undefined
+      )
+      .then(() => {
+        console.log('[AutoJoin] Join success. Refreshing room data...');
+        refreshRoomData();
+      })
+      .catch((err) => {
+        console.error('[AutoJoin] Join failed:', err);
+        setError(err.message || 'Auto-join failed');
+      });
+    }
+  }, [loading, session, participants, resolvedUserId, resolvedRole, sessionId, autoJoinAttempted]);
+
+  // Establish real-time WebSocket connection
   useEffect(() => {
     if (!sessionId) return;
 
@@ -155,14 +166,10 @@ export default function SessionRoomPage({ params }: PageProps) {
           if (data.payload.message_type === 'SYSTEM') {
             console.log('[WebSocket onmessage] MESSAGE_RECEIVED system event. Triggering refreshRoomData.');
             refreshRoomData();
-          } else {
-            console.log('[WebSocket onmessage] MESSAGE_RECEIVED user event. Bypassing refreshRoomData.');
           }
         } else if (data.event_type === 'MESSAGE_SEND_ERROR') {
-          console.log('[WebSocket onmessage] MESSAGE_SEND_ERROR event matched.');
           setError(`Failed to send message: ${data.payload.reason}`);
         } else {
-          console.log(`[WebSocket onmessage] Event ${data.event_type} matched. Calling refreshRoomData.`);
           refreshRoomData();
         }
       } catch (err) {
@@ -185,14 +192,7 @@ export default function SessionRoomPage({ params }: PageProps) {
       ws.close();
       wsRef.current = null;
     };
-  }, [sessionId, currentParticipantId]); // Only reconnect when navigating to a different session
-
-  // Set default invite token from fetched session
-  useEffect(() => {
-    if (session) {
-      setSimInviteToken(session.invite_token);
-    }
-  }, [session]);
+  }, [sessionId, currentParticipantId]);
 
   // Copy customer join link to clipboard
   const handleCopyLink = () => {
@@ -202,26 +202,6 @@ export default function SessionRoomPage({ params }: PageProps) {
       setCopySuccess(true);
       setTimeout(() => setCopySuccess(false), 2000);
     });
-  };
-
-  // Actions
-  const handleJoinSimulation = async () => {
-    try {
-      setError(null);
-      await apiClient.joinSession(sessionId, simUserId, simRole, simRole === 'customer' ? simInviteToken : undefined);
-      
-      // Sync simulated identity to trigger MediaRoom rendering
-      setResolvedUserId(simUserId);
-      setResolvedRole(simRole);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(`${storedIdentityKey}_userId`, simUserId);
-        localStorage.setItem(`${storedIdentityKey}_role`, simRole);
-      }
-
-      await refreshRoomData();
-    } catch (err: any) {
-      setError(err.message || 'Join failed');
-    }
   };
 
   const handleDisconnect = async (pId: string) => {
@@ -301,22 +281,32 @@ export default function SessionRoomPage({ params }: PageProps) {
     );
   }
 
+  const isAgent = resolvedRole === 'agent';
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-indigo-500 selection:text-white">
       {/* Header */}
-      <header className="border-b border-zinc-800 bg-zinc-900/50 backdrop-blur-md sticky top-0 z-50">
+      <header className="border-b border-zinc-850 bg-zinc-900/40 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Link
-              href="/agent"
-              className="p-2 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-200 transition-all"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-              </svg>
-            </Link>
-            <span className="text-zinc-500">/</span>
-            <span className="font-semibold text-sm text-zinc-200">Session Diagnostic Room</span>
+            {isAgent && (
+              <Link
+                href="/agent"
+                className="p-2 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-200 transition-all"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                </svg>
+              </Link>
+            )}
+            {!isAgent && (
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-indigo-500 to-violet-500 flex items-center justify-center font-bold text-white shadow-lg">
+                VQ
+              </div>
+            )}
+            <span className="font-semibold text-sm text-zinc-200">
+              {isAgent ? 'Support Diagnostics Center' : 'Customer Support Portal'}
+            </span>
           </div>
 
           <div className="flex items-center gap-3">
@@ -333,12 +323,14 @@ export default function SessionRoomPage({ params }: PageProps) {
                 {session.status === 'ABANDONED' ? '⚠ ABANDONED' : session.status}
               </span>
             )}
-            <button
-              onClick={refreshRoomData}
-              className="px-3 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-850 text-zinc-400 hover:text-zinc-200 text-xs font-medium transition-all"
-            >
-              Force Sync
-            </button>
+            {isAgent && (
+              <button
+                onClick={refreshRoomData}
+                className="px-3 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-850 text-zinc-400 hover:text-zinc-200 text-xs font-medium transition-all"
+              >
+                Sync Status
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -354,139 +346,208 @@ export default function SessionRoomPage({ params }: PageProps) {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          {/* Left Side: Room Details & Participant List (5 cols) */}
-          <div className="lg:col-span-5 space-y-6">
-            {/* Room Metadata */}
-            {session && (
-              <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-zinc-400 mb-4">
-                  Session Metadata
-                </h3>
-                <div className="space-y-3 text-xs">
-                  <div className="flex justify-between py-1 border-b border-zinc-800/40">
-                    <span className="text-zinc-500">Session ID</span>
-                    <span className="font-mono text-zinc-300">{session.id}</span>
-                  </div>
-                  <div className="flex justify-between py-1 border-b border-zinc-800/40">
-                    <span className="text-zinc-500">Assigned Agent</span>
-                    <span className="text-zinc-300">{session.agent_id}</span>
-                  </div>
-                  <div className="flex justify-between py-1 border-b border-zinc-800/40">
-                    <span className="text-zinc-500">Invite Token</span>
-                    <span className="font-mono text-zinc-400">{session.invite_token}</span>
-                  </div>
-                  <div className="flex justify-between py-1">
-                    <span className="text-zinc-500">Created At</span>
-                    <span className="text-zinc-400">{new Date(session.created_at).toLocaleString()}</span>
-                  </div>
-                </div>
-
-                {session.status !== 'ENDED' && (
-                  <div className="mt-6 flex gap-2">
-                    <button
-                      onClick={handleCopyLink}
-                      className="flex-1 py-2 px-3 rounded-lg bg-indigo-950/60 hover:bg-indigo-900/40 text-indigo-400 border border-indigo-800/40 text-xs font-semibold flex items-center justify-center gap-2 transition-all active:scale-95"
-                    >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-                      </svg>
-                      {copySuccess ? 'Copied Link!' : 'Copy Customer Invite'}
-                    </button>
-                    <button
-                      onClick={handleEndSession}
-                      className="py-2 px-4 rounded-lg bg-red-950/40 hover:bg-red-900/30 text-red-400 border border-red-900/30 text-xs font-semibold transition-all active:scale-95"
-                    >
-                      End Session
-                    </button>
+        {isAgent ? (
+          /* AGENT VIEW: Two columns layout with diagnostics at the bottom */
+          <div className="space-y-8">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+              {/* Left Column (8 cols): Media Call + Chat */}
+              <div className="lg:col-span-8 space-y-6">
+                {resolvedUserId && resolvedRole ? (
+                  <MediaRoom
+                    sessionId={sessionId}
+                    userId={resolvedUserId}
+                    role={resolvedRole}
+                    sessionStatus={session?.status || 'CREATED'}
+                  />
+                ) : (
+                  <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 text-center text-zinc-500 text-xs">
+                    Initializing local identity...
                   </div>
                 )}
+
+                <ChatPanel
+                  messages={chatMessages}
+                  participants={participants}
+                  currentParticipantId={currentParticipantId}
+                  sessionStatus={session?.status || 'CREATED'}
+                  onSendMessage={handleSendMessage}
+                />
               </div>
-            )}
 
-            {/* Participants list */}
-            <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30">
-              <h3 className="text-sm font-semibold uppercase tracking-wider text-zinc-400 mb-4">
-                Registered Participants
-              </h3>
-              
-              {participants.length === 0 ? (
-                <div className="py-8 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl bg-zinc-950/25">
-                  No participants registered in this session yet.
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {participants.map((p) => (
-                    <div
-                      key={p.id}
-                      className="p-4 rounded-xl bg-zinc-950 border border-zinc-800 flex flex-col gap-3"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="font-semibold text-sm text-zinc-200">{p.user_id}</div>
-                          <div className="text-[10px] text-zinc-500 font-medium tracking-wider uppercase mt-0.5">
-                            {p.role}
-                          </div>
-                        </div>
-
-                        <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
-                          p.connection_status === 'CONNECTED'
-                            ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800/40'
-                            : p.connection_status === 'DISCONNECTED'
-                            ? 'bg-amber-950/50 text-amber-400 border border-amber-800/40 animate-pulse'
-                            : 'bg-zinc-900 text-zinc-500 border border-zinc-800'
-                        }`}>
-                          {p.connection_status}
-                        </span>
+              {/* Right Column (4 cols): Metadata & Participant Roster */}
+              <div className="lg:col-span-4 space-y-6">
+                {/* Session Metadata */}
+                {session && (
+                  <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30">
+                    <h3 className="text-sm font-semibold uppercase tracking-wider text-zinc-400 mb-4">
+                      Session Details
+                    </h3>
+                    <div className="space-y-3 text-xs">
+                      <div className="flex justify-between py-1 border-b border-zinc-800/40">
+                        <span className="text-zinc-500">Session ID</span>
+                        <span className="font-mono text-zinc-300">{session.id}</span>
                       </div>
+                      <div className="flex justify-between py-1 border-b border-zinc-800/40">
+                        <span className="text-zinc-500">Assigned Agent</span>
+                        <span className="text-zinc-300">{session.agent_id}</span>
+                      </div>
+                      <div className="flex justify-between py-1 border-b border-zinc-800/40">
+                        <span className="text-zinc-500">Invite Token</span>
+                        <span className="font-mono text-zinc-400">{session.invite_token}</span>
+                      </div>
+                      <div className="flex justify-between py-1">
+                        <span className="text-zinc-500">Created At</span>
+                        <span className="text-zinc-400">{new Date(session.created_at).toLocaleString()}</span>
+                      </div>
+                    </div>
 
-                      {/* Participant state controls */}
-                      {session?.status !== 'ENDED' && (
-                        <div className="flex gap-1.5 border-t border-zinc-900 pt-2.5">
-                          {p.connection_status === 'CONNECTED' && (
-                            <>
-                              <button
-                                onClick={() => handleDisconnect(p.id)}
-                                className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] font-semibold text-amber-400 transition-all"
-                              >
-                                Disconnect
-                              </button>
-                              <button
-                                onClick={() => handleLeave(p.id)}
-                                className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] font-semibold text-red-400 transition-all"
-                              >
-                                Leave
-                              </button>
-                            </>
-                          )}
-                          {p.connection_status === 'DISCONNECTED' && (
-                            <>
-                              <button
-                                onClick={() => handleReconnect(p.id)}
-                                className="flex-1 py-1 rounded bg-indigo-950 hover:bg-indigo-900/30 text-[10px] font-semibold text-indigo-400 border border-indigo-800/30 transition-all"
-                              >
-                                Reconnect
-                              </button>
-                              <button
-                                onClick={() => handleLeave(p.id)}
-                                className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] font-semibold text-red-400 transition-all"
-                              >
-                                Leave
-                              </button>
-                            </>
+                    {session.status !== 'ENDED' && (
+                      <div className="mt-6 flex gap-2">
+                        <button
+                          onClick={handleCopyLink}
+                          className="flex-1 py-2 px-3 rounded-lg bg-indigo-950/60 hover:bg-indigo-900/40 text-indigo-400 border border-indigo-800/40 text-xs font-semibold flex items-center justify-center gap-2 transition-all active:scale-95"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                          </svg>
+                          {copySuccess ? 'Copied Link!' : 'Invite Customer'}
+                        </button>
+                        <button
+                          onClick={handleEndSession}
+                          className="py-2 px-4 rounded-lg bg-red-950/40 hover:bg-red-900/30 text-red-400 border border-red-900/30 text-xs font-semibold transition-all active:scale-95"
+                        >
+                          End Session
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Participant Roster */}
+                <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30">
+                  <h3 className="text-sm font-semibold uppercase tracking-wider text-zinc-400 mb-4">
+                    Active Roster
+                  </h3>
+                  
+                  {participants.length === 0 ? (
+                    <div className="py-8 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl bg-zinc-950/25">
+                      No participants registered yet.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {participants.map((p) => (
+                        <div
+                          key={p.id}
+                          className="p-4 rounded-xl bg-zinc-950 border border-zinc-800 flex flex-col gap-3"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="font-semibold text-sm text-zinc-200">{p.user_id}</div>
+                              <div className="text-[10px] text-zinc-500 font-medium tracking-wider uppercase mt-0.5">
+                                {p.role}
+                              </div>
+                            </div>
+
+                            <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
+                              p.connection_status === 'CONNECTED'
+                                ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800/40'
+                                : p.connection_status === 'DISCONNECTED'
+                                ? 'bg-amber-950/50 text-amber-400 border border-amber-800/40 animate-pulse'
+                                : 'bg-zinc-900 text-zinc-500 border border-zinc-800'
+                            }`}>
+                              {p.connection_status}
+                            </span>
+                          </div>
+
+                          {session?.status !== 'ENDED' && (
+                            <div className="flex gap-1.5 border-t border-zinc-900 pt-2.5">
+                              {p.connection_status === 'CONNECTED' && (
+                                <>
+                                  <button
+                                    onClick={() => handleDisconnect(p.id)}
+                                    className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] font-semibold text-amber-400 transition-all"
+                                  >
+                                    Disconnect
+                                  </button>
+                                  <button
+                                    onClick={() => handleLeave(p.id)}
+                                    className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] font-semibold text-red-400 transition-all"
+                                  >
+                                    Leave
+                                  </button>
+                                </>
+                              )}
+                              {p.connection_status === 'DISCONNECTED' && (
+                                <>
+                                  <button
+                                    onClick={() => handleReconnect(p.id)}
+                                    className="flex-1 py-1 rounded bg-indigo-950 hover:bg-indigo-900/30 text-[10px] font-semibold text-indigo-400 border border-indigo-800/30 transition-all"
+                                  >
+                                    Reconnect
+                                  </button>
+                                  <button
+                                    onClick={() => handleLeave(p.id)}
+                                    className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] font-semibold text-red-400 transition-all"
+                                  >
+                                    Leave
+                                  </button>
+                                </>
+                              )}
+                            </div>
                           )}
                         </div>
-                      )}
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
-              )}
+              </div>
             </div>
-          </div>
 
-          {/* Middle/Right Side: diagnostic events & simulations controller (7 cols) */}
-          <div className="lg:col-span-7 space-y-6">
-            {/* LiveKit Media Room Call */}
+            {/* Collapsible Diagnostic Logs (Agent-Only) */}
+            <details className="group border border-zinc-850 rounded-2xl bg-zinc-900 shadow-xl shadow-black/45 overflow-hidden">
+              <summary className="p-6 cursor-pointer select-none flex items-center justify-between font-semibold text-sm uppercase tracking-wider text-zinc-400 hover:bg-zinc-800/40 transition-all">
+                <span className="flex items-center gap-2.5">
+                  <svg className="w-4 h-4 text-zinc-500 group-open:rotate-90 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                  </svg>
+                  Diagnostic Event Log Feed
+                </span>
+                <span className="text-[10px] bg-zinc-950 px-2 py-0.5 rounded text-zinc-500 font-mono">
+                  {events.length} events
+                </span>
+              </summary>
+              <div className="px-6 pb-6 pt-2">
+                <div className="rounded-xl bg-zinc-950 border border-zinc-850 p-4 max-h-[300px] overflow-y-auto font-mono text-[11px] leading-relaxed space-y-3 scrollbar-thin">
+                  {events.length === 0 ? (
+                    <div className="text-center text-zinc-700 py-6">
+                      Waiting for state telemetry signals...
+                    </div>
+                  ) : (
+                    events.map((event) => (
+                      <div key={event.id} className="pb-2.5 border-b border-zinc-900/40 last:border-0 last:pb-0">
+                        <div className="flex justify-between items-center text-zinc-500">
+                          <span className="text-indigo-400 font-semibold">{event.event_type}</span>
+                          <span>{new Date(event.timestamp).toLocaleTimeString()}</span>
+                        </div>
+                        <div className="mt-1 text-zinc-400">
+                          {event.metadata && Object.keys(event.metadata).length > 0 ? (
+                            <pre className="p-2 rounded bg-zinc-900/40 text-zinc-400 overflow-x-auto whitespace-pre-wrap">
+                              {JSON.stringify(event.metadata)}
+                            </pre>
+                          ) : (
+                            <span className="italic text-zinc-650">No metadata payload</span>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </details>
+          </div>
+        ) : (
+          /* CUSTOMER VIEW: Single Column layout centered, absolutely no diagnostics or simulator elements */
+          <div className="max-w-4xl mx-auto space-y-6">
             {resolvedUserId && resolvedRole ? (
               <MediaRoom
                 sessionId={sessionId}
@@ -496,71 +557,10 @@ export default function SessionRoomPage({ params }: PageProps) {
               />
             ) : (
               <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 text-center text-zinc-500 text-xs">
-                <svg className="w-10 h-10 text-zinc-700 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-                <span>Join the session as an Agent or Customer using the controller below to initialize video/audio streaming.</span>
+                Initializing secure video stream...
               </div>
             )}
 
-            {/* Participant Simulation Controller */}
-            {session?.status !== 'ENDED' && (
-              <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-zinc-400 mb-4">
-                  Join Simulator Controller
-                </h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-500 mb-2">
-                      User ID
-                    </label>
-                    <input
-                      type="text"
-                      value={simUserId}
-                      onChange={(e) => setSimUserId(e.target.value)}
-                      className="w-full px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100 outline-none focus:border-indigo-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-500 mb-2">
-                      Simulated Role
-                    </label>
-                    <select
-                      value={simRole}
-                      onChange={(e) => setSimRole(e.target.value as 'agent' | 'customer')}
-                      className="w-full px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100 outline-none focus:border-indigo-500"
-                    >
-                      <option value="agent">AGENT</option>
-                      <option value="customer">CUSTOMER</option>
-                    </select>
-                  </div>
-                </div>
-
-                {simRole === 'customer' && (
-                  <div className="mt-4">
-                    <label className="block text-[10px] font-semibold uppercase tracking-wider text-zinc-500 mb-2">
-                      Customer Invite Token
-                    </label>
-                    <input
-                      type="text"
-                      value={simInviteToken}
-                      onChange={(e) => setSimInviteToken(e.target.value)}
-                      placeholder="Required for customer joins"
-                      className="w-full px-3 py-2 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-zinc-100 outline-none focus:border-indigo-500"
-                    />
-                  </div>
-                )}
-
-                <button
-                  onClick={handleJoinSimulation}
-                  className="w-full mt-5 py-2.5 rounded-xl bg-zinc-950 border border-zinc-800 hover:bg-zinc-850 text-zinc-200 text-xs font-semibold shadow-md active:scale-95 transition-all"
-                >
-                  Join via Simulator
-                </button>
-              </div>
-            )}
-
-            {/* Chat Room */}
             <ChatPanel
               messages={chatMessages}
               participants={participants}
@@ -568,44 +568,8 @@ export default function SessionRoomPage({ params }: PageProps) {
               sessionStatus={session?.status || 'CREATED'}
               onSendMessage={handleSendMessage}
             />
-
-            {/* Diagnostic Event Logs */}
-            <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30">
-              <h3 className="text-sm font-semibold uppercase tracking-wider text-zinc-400 mb-4 flex items-center justify-between">
-                <span>Diagnostic Event Log Feed</span>
-                <span className="text-[10px] bg-zinc-950 px-2 py-0.5 rounded text-zinc-500 font-mono">
-                  {events.length} events
-                </span>
-              </h3>
-
-              <div className="rounded-xl bg-zinc-950 border border-zinc-900 p-4 max-h-[360px] overflow-y-auto font-mono text-[11px] leading-relaxed space-y-3 scrollbar-thin">
-                {events.length === 0 ? (
-                  <div className="text-center text-zinc-700 py-6">
-                    Waiting for state telemetry signals...
-                  </div>
-                ) : (
-                  events.map((event) => (
-                    <div key={event.id} className="pb-2.5 border-b border-zinc-900/40 last:border-0 last:pb-0">
-                      <div className="flex justify-between items-center text-zinc-500">
-                        <span className="text-indigo-400 font-semibold">{event.event_type}</span>
-                        <span>{new Date(event.timestamp).toLocaleTimeString()}</span>
-                      </div>
-                      <div className="mt-1 text-zinc-400">
-                        {event.metadata && Object.keys(event.metadata).length > 0 ? (
-                          <pre className="p-2 rounded bg-zinc-900/40 text-zinc-400 overflow-x-auto whitespace-pre-wrap">
-                            {JSON.stringify(event.metadata)}
-                          </pre>
-                        ) : (
-                          <span className="italic text-zinc-600">No metadata payload</span>
-                        )}
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
           </div>
-        </div>
+        )}
       </main>
     </div>
   );

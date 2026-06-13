@@ -55,8 +55,9 @@ async def test_scenario_1_customer_leaves_agent_remains(db_session):
         mock_update.assert_called_once_with(str(session.id), str(cust_p.id), "LEFT")
         
     # Re-fetch states
-    participants = await participant_service.get_session_participants(session.id)
+    participants = await participant_service.get_session_participants(session.id, initiator=agent_identity)
     p_map = {p.id: p for p in participants}
+
     
     assert p_map[cust_p.id].connection_status == ParticipantConnectionStatus.LEFT
     assert p_map[agent_p.id].connection_status == ParticipantConnectionStatus.CONNECTED
@@ -83,8 +84,9 @@ async def test_scenario_2_agent_leaves_customer_remains(db_session):
     # Agent leaves
     await participant_service.leave_session(session.id, agent_p.id)
     
-    participants = await participant_service.get_session_participants(session.id)
+    participants = await participant_service.get_session_participants(session.id, initiator=cust_identity)
     p_map = {p.id: p for p in participants}
+
     
     assert p_map[agent_p.id].connection_status == ParticipantConnectionStatus.LEFT
     assert p_map[cust_p.id].connection_status == ParticipantConnectionStatus.CONNECTED
@@ -115,14 +117,16 @@ async def test_scenario_3_customer_leaves_agent_sends_chat(db_session):
     msg = await chat_service.create_message(
         session_id=session.id,
         content="Hello Customer, are you there?",
+        initiator=agent_identity,
         sender_participant_id=agent_p.id,
     )
     assert msg.id is not None
+
     assert msg.content == "Hello Customer, are you there?"
     assert msg.sender_participant_id == agent_p.id
     
     # Fetch chat messages
-    messages = await chat_service.get_messages(session.id)
+    messages = await chat_service.get_messages(session.id, initiator=agent_identity)
     contents = [m.content for m in messages]
     assert "Hello Customer, are you there?" in contents
 
@@ -206,6 +210,7 @@ async def test_scenario_6_explicit_end_session(db_session):
     assert session.status == SessionStatus.ENDED
     
     # Verify all participants are LEFT
-    participants = await participant_service.get_session_participants(session.id)
+    participants = await participant_service.get_session_participants(session.id, initiator=agent_identity)
     for p in participants:
         assert p.connection_status == ParticipantConnectionStatus.LEFT
+

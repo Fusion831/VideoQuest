@@ -82,3 +82,16 @@ class LiveKitTokenResponse(BaseModel):
     livekit_url: str
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(..., description="Agent username")
+    password: str = Field(..., description="Agent password")
+
+
+class LoginResponse(BaseModel):
+    status: str
+    token: str
+    user_id: str
+    role: str
+
+
+

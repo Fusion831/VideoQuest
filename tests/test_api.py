@@ -89,15 +89,18 @@ async def test_api_session_lifecycle(client):
     assert start_res.status_code == 404
 
     # 3. End session (CREATED -> ENDED)
-    end_res = await client.post(f"/api/v1/sessions/{session_id}/end")
+    headers = {"X-User-ID": "agent_1", "X-User-Role": "agent"}
+    end_res = await client.post(f"/api/v1/sessions/{session_id}/end", headers=headers)
     assert end_res.status_code == 200
     assert end_res.json()["status"] == "ENDED"
     assert end_res.json()["ended_at"] is not None
 
+
     # 4. Verify ended session termination is idempotent (returns 200 and the ended session status)
-    re_end_res = await client.post(f"/api/v1/sessions/{session_id}/end")
+    re_end_res = await client.post(f"/api/v1/sessions/{session_id}/end", headers=headers)
     assert re_end_res.status_code == 200
     assert re_end_res.json()["status"] == "ENDED"
+
 
 
 async def test_api_session_history_and_events(client):
@@ -110,7 +113,11 @@ async def test_api_session_history_and_events(client):
     s2_id = r2.json()["id"]
 
     # End session 1
-    await client.post(f"/api/v1/sessions/{s1_id}/end")
+    await client.post(
+        f"/api/v1/sessions/{s1_id}/end",
+        headers={"X-User-ID": "agent_1", "X-User-Role": "agent"}
+    )
+
 
     # List sessions
     list_res = await client.get("/api/v1/sessions/")
@@ -127,8 +134,12 @@ async def test_api_session_history_and_events(client):
     assert s2_id not in ended_ids
 
     # Query events for session 1 (should be CREATED and ENDED)
-    events_res = await client.get(f"/api/v1/sessions/{s1_id}/events")
+    events_res = await client.get(
+        f"/api/v1/sessions/{s1_id}/events",
+        headers={"X-User-ID": "agent_1", "X-User-Role": "agent"}
+    )
     assert events_res.status_code == 200
+
     events = events_res.json()
     assert len(events) == 2
     assert events[0]["event_type"] == "SESSION_CREATED"

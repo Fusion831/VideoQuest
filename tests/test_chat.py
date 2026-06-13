@@ -34,8 +34,10 @@ async def test_chat_service_basics(db_session: AsyncSession):
     msg1 = await chat_service.create_message(
         session_id=session.id,
         content="Hello, world!",
+        initiator=agent_identity,
         sender_participant_id=participant.id,
     )
+
     assert msg1.id is not None
     assert msg1.content == "Hello, world!"
     assert msg1.message_type == ChatMessageType.USER
@@ -44,11 +46,12 @@ async def test_chat_service_basics(db_session: AsyncSession):
     msg2 = await chat_service.create_message(
         session_id=session.id,
         content="Second message",
+        initiator=agent_identity,
         sender_participant_id=participant.id,
     )
 
     # 3. Retrieve messages chronologically
-    history = await chat_service.get_messages(session.id)
+    history = await chat_service.get_messages(session.id, initiator=agent_identity)
     # Plus system messages generated during join
     # "Agent agent_1 joined the session" and "Support session started"
     assert len(history) >= 4
@@ -83,8 +86,10 @@ async def test_chat_service_ended_session(db_session: AsyncSession):
         await chat_service.create_message(
             session_id=session.id,
             content="Can't send on ended session",
+            initiator=agent_identity,
             sender_participant_id=participant.id,
         )
+
 
 
 @pytest.mark.anyio
@@ -105,7 +110,7 @@ async def test_system_messages_on_lifecycle(db_session: AsyncSession):
     agent_participant = await participant_service.join_session(session.id, agent_identity)
     
     # Get messages to verify SYSTEM messages generated
-    messages = await chat_service.get_messages(session.id)
+    messages = await chat_service.get_messages(session.id, initiator=agent_identity)
     contents = [m.content for m in messages]
     
     assert "Agent agent_1 joined the session" in contents
@@ -114,7 +119,7 @@ async def test_system_messages_on_lifecycle(db_session: AsyncSession):
     # Leave agent (abandon session)
     await participant_service.leave_session(session.id, agent_participant.id)
     
-    messages_after = await chat_service.get_messages(session.id)
+    messages_after = await chat_service.get_messages(session.id, initiator=agent_identity)
     contents_after = [m.content for m in messages_after]
     
     assert "Agent agent_1 left the session" in contents_after
@@ -141,6 +146,7 @@ async def test_chat_rest_api(client: AsyncClient, db_session: AsyncSession):
     await chat_service.create_message(
         session_id=session.id,
         content="Test REST message",
+        initiator=agent_identity,
         sender_participant_id=participant.id,
     )
 
