@@ -2,9 +2,9 @@ from typing import Optional, List, Tuple
 import uuid
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models import DomainSession
+from src.domain.models import DomainSession, DomainParticipant
 from src.domain.events import DomainSessionEvent
-from src.infrastructure.models import SessionORM, SessionEventORM
+from src.infrastructure.models import SessionORM, SessionEventORM, ParticipantORM
 
 
 class SessionRepository:
@@ -77,3 +77,44 @@ class SessionEventRepository:
         )
         orm_events = result.scalars().all()
         return [orm.to_domain() for orm in orm_events]
+
+
+class ParticipantRepository:
+    def __init__(self, db_session: AsyncSession):
+        self.db_session = db_session
+
+    async def save(self, domain_participant: DomainParticipant) -> DomainParticipant:
+        """Save a participant (inserts or updates)."""
+        orm_participant = ParticipantORM.from_domain(domain_participant)
+        merged = await self.db_session.merge(orm_participant)
+        await self.db_session.flush()
+        return merged.to_domain()
+
+    async def get_by_id(self, participant_id: uuid.UUID) -> Optional[DomainParticipant]:
+        """Retrieve a participant by their ID."""
+        result = await self.db_session.execute(
+            select(ParticipantORM).where(ParticipantORM.id == participant_id)
+        )
+        orm_participant = result.scalar_one_or_none()
+        return orm_participant.to_domain() if orm_participant else None
+
+    async def get_by_session_id(self, session_id: uuid.UUID) -> List[DomainParticipant]:
+        """Retrieve all participants for a session."""
+        result = await self.db_session.execute(
+            select(ParticipantORM)
+            .where(ParticipantORM.session_id == session_id)
+            .order_by(ParticipantORM.joined_at.asc())
+        )
+        orm_participants = result.scalars().all()
+        return [orm.to_domain() for orm in orm_participants]
+
+    async def get_by_session_and_role(self, session_id: uuid.UUID, role: str) -> Optional[DomainParticipant]:
+        """Retrieve a participant by session and role (at most one per role)."""
+        result = await self.db_session.execute(
+            select(ParticipantORM)
+            .where(ParticipantORM.session_id == session_id)
+            .where(ParticipantORM.role == role)
+        )
+        orm_participant = result.scalar_one_or_none()
+        return orm_participant.to_domain() if orm_participant else None
+

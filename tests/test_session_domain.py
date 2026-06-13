@@ -2,6 +2,7 @@ from datetime import datetime
 import pytest
 import uuid
 
+# pyrefly: ignore [missing-import]
 from src.domain.models import DomainSession, SessionStatus
 
 

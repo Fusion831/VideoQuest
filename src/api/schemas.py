@@ -45,3 +45,22 @@ class SessionEventResponse(BaseModel):
     metadata: Dict[str, Any]
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ParticipantJoinRequest(BaseModel):
+    invite_token: Optional[str] = Field(None, description="Invite token (required for customer joins)")
+
+
+class ParticipantResponse(BaseModel):
+    id: uuid.UUID
+    session_id: uuid.UUID
+    role: str
+    user_id: str
+    joined_at: datetime
+    left_at: Optional[datetime] = None
+    connection_status: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+

@@ -7,7 +7,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.types import TypeDecorator, CHAR
 
 from src.infrastructure.database import Base
-from src.domain.models import DomainSession, SessionStatus
+from src.domain.models import DomainSession, SessionStatus, DomainParticipant, ParticipantRole, ParticipantConnectionStatus
 from src.domain.events import DomainSessionEvent, SessionEventType
 
 
@@ -125,5 +125,51 @@ class SessionEventORM(Base):
         )
 
 
+class ParticipantORM(Base):
+    __tablename__ = "participants"
+
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    session_id = Column(GUID, ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
+    role = Column(String(50), nullable=False)
+    user_id = Column(String(255), nullable=False)
+    joined_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    left_at = Column(DateTime(timezone=True), nullable=True)
+    connection_status = Column(String(50), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+
+    def to_domain(self) -> DomainParticipant:
+        return DomainParticipant(
+            id=self.id,
+            session_id=self.session_id,
+            role=ParticipantRole(self.role),
+            user_id=self.user_id,
+            joined_at=self.joined_at.replace(tzinfo=timezone.utc) if self.joined_at else None,
+            left_at=self.left_at.replace(tzinfo=timezone.utc) if self.left_at else None,
+            connection_status=ParticipantConnectionStatus(self.connection_status),
+            created_at=self.created_at.replace(tzinfo=timezone.utc) if self.created_at else None,
+            updated_at=self.updated_at.replace(tzinfo=timezone.utc) if self.updated_at else None,
+        )
+
+    @classmethod
+    def from_domain(cls, domain: DomainParticipant) -> "ParticipantORM":
+        return cls(
+            id=domain.id,
+            session_id=domain.session_id,
+            role=domain.role.value,
+            user_id=domain.user_id,
+            joined_at=domain.joined_at,
+            left_at=domain.left_at,
+            connection_status=domain.connection_status.value,
+            created_at=domain.created_at,
+            updated_at=domain.updated_at,
+        )
+
+
 # Setup indexes on SessionEventORM for fast retrieval of events by session
 Index("idx_session_events_session_id_timestamp", SessionEventORM.session_id, SessionEventORM.timestamp)
+
+# Setup indexes on ParticipantORM
+Index("idx_participants_session_role", ParticipantORM.session_id, ParticipantORM.role, unique=True)
+Index("idx_participants_session_id", ParticipantORM.session_id)
+

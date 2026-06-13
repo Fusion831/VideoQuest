@@ -8,6 +8,11 @@ from src.core.exceptions import (
     SessionNotFound,
     InvalidInvite,
     InvalidStateTransition,
+    SessionAlreadyEnded,
+    ParticipantNotFound,
+    ParticipantAlreadyJoined,
+    ParticipantAlreadyLeft,
+    InvalidConnectionTransition,
 )
 from src.core.identity import Identity
 from src.api.schemas import (
@@ -17,9 +22,12 @@ from src.api.schemas import (
     ValidateInviteResponse,
     SessionListResponse,
     SessionEventResponse,
+    ParticipantJoinRequest,
+    ParticipantResponse,
 )
-from src.api.dependencies import get_session_service, get_current_identity
+from src.api.dependencies import get_session_service, get_participant_service, get_current_identity
 from src.services.session_service import SessionService
+from src.services.participant_service import ParticipantService
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -112,3 +120,102 @@ async def get_session_events(
         return events
     except SessionNotFound as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+
+
+@router.post("/{session_id}/participants/join", response_model=ParticipantResponse, status_code=status.HTTP_201_CREATED)
+async def join_session(
+    session_id: uuid.UUID,
+    request: ParticipantJoinRequest,
+    identity: Identity = Depends(get_current_identity),
+    service: ParticipantService = Depends(get_participant_service),
+):
+    """Join a session as a participant (Agent or Customer)."""
+    try:
+        participant = await service.join_session(
+            session_id=session_id,
+            identity=identity,
+            invite_token=request.invite_token,
+        )
+        return participant
+    except SessionNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    except SessionAlreadyEnded as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
+    except InvalidInvite as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
+    except ParticipantAlreadyJoined as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.message)
+    except ParticipantAlreadyLeft as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
+    except DomainException as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e.message))
+
+
+@router.post("/{session_id}/participants/{participant_id}/leave", response_model=ParticipantResponse)
+async def leave_session(
+    session_id: uuid.UUID,
+    participant_id: uuid.UUID,
+    service: ParticipantService = Depends(get_participant_service),
+):
+    """Leave the session. This endpoint is idempotent."""
+    try:
+        participant = await service.leave_session(session_id=session_id, participant_id=participant_id)
+        return participant
+    except ParticipantNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    except DomainException as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e.message))
+
+
+@router.post("/{session_id}/participants/{participant_id}/disconnect", response_model=ParticipantResponse)
+async def disconnect_participant(
+    session_id: uuid.UUID,
+    participant_id: uuid.UUID,
+    service: ParticipantService = Depends(get_participant_service),
+):
+    """Mark the participant connection status as DISCONNECTED. This endpoint is idempotent."""
+    try:
+        participant = await service.disconnect_participant(session_id=session_id, participant_id=participant_id)
+        return participant
+    except ParticipantNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    except InvalidConnectionTransition as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
+    except DomainException as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e.message))
+
+
+@router.post("/{session_id}/participants/{participant_id}/reconnect", response_model=ParticipantResponse)
+async def reconnect_participant(
+    session_id: uuid.UUID,
+    participant_id: uuid.UUID,
+    service: ParticipantService = Depends(get_participant_service),
+):
+    """Reconnect a disconnected participant back to the session."""
+    try:
+        participant = await service.reconnect_participant(session_id=session_id, participant_id=participant_id)
+        return participant
+    except ParticipantNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    except SessionNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+    except SessionAlreadyEnded as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
+    except InvalidConnectionTransition as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.message)
+    except DomainException as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e.message))
+
+
+@router.get("/{session_id}/participants", response_model=list[ParticipantResponse])
+async def get_session_participants(
+    session_id: uuid.UUID,
+    service: ParticipantService = Depends(get_participant_service),
+):
+    """Query all participants in a given session."""
+    try:
+        participants = await service.get_session_participants(session_id=session_id)
+        return participants
+    except SessionNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
+
