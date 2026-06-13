@@ -16,6 +16,7 @@ export default function CustomerJoinPage({ params }: PageProps) {
   const [isValid, setIsValid] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionStatus, setSessionStatus] = useState<string | null>(null);
+  const [validationErrorType, setValidationErrorType] = useState<'INVALID' | 'EXPIRED' | 'ENDED' | null>(null);
 
   const [customerId, setCustomerId] = useState('');
   const [joinLoading, setJoinLoading] = useState(false);
@@ -25,14 +26,22 @@ export default function CustomerJoinPage({ params }: PageProps) {
     const validateToken = async () => {
       try {
         setValidationLoading(true);
+        setValidationErrorType(null);
         setError(null);
         const res = await apiClient.validateInvite(inviteToken);
         setIsValid(res.valid);
         setSessionId(res.session_id);
         setSessionStatus(res.status);
       } catch (err: any) {
-        setError(err.message || 'Invite token validation failed');
         setIsValid(false);
+        const errMsg = err.message || '';
+        if (errMsg.includes('ended')) {
+          setValidationErrorType('ENDED');
+        } else if (errMsg.includes('expired')) {
+          setValidationErrorType('EXPIRED');
+        } else {
+          setValidationErrorType('INVALID');
+        }
       } finally {
         setValidationLoading(false);
       }
@@ -102,17 +111,45 @@ export default function CustomerJoinPage({ params }: PageProps) {
             </svg>
             <span className="text-sm text-zinc-400">Verifying secure token integrity...</span>
           </div>
-        ) : !isValid ? (
+        ) : validationErrorType === 'INVALID' ? (
           <div className="py-6 text-center space-y-4">
             <div className="w-12 h-12 rounded-full bg-red-950/40 border border-red-900/30 flex items-center justify-center mx-auto text-red-400">
               <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
               </svg>
             </div>
             <div className="space-y-1">
-              <h3 className="text-sm font-semibold text-zinc-300">Invite Code Expired or Invalid</h3>
+              <h3 className="text-sm font-semibold text-zinc-300">Invalid support link</h3>
               <p className="text-xs text-zinc-500 leading-relaxed max-w-xs mx-auto">
-                This link is no longer valid, belongs to an ended session, or does not exist. Please contact your support representative.
+                The support invitation code is invalid, unrecognized, or has been entered incorrectly.
+              </p>
+            </div>
+          </div>
+        ) : validationErrorType === 'EXPIRED' ? (
+          <div className="py-6 text-center space-y-4">
+            <div className="w-12 h-12 rounded-full bg-amber-950/40 border border-amber-900/30 flex items-center justify-center mx-auto text-amber-400">
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-sm font-semibold text-zinc-300">Support session unavailable</h3>
+              <p className="text-xs text-zinc-500 leading-relaxed max-w-xs mx-auto">
+                This support invitation link has expired. Secure invite tokens are valid for up to 24 hours.
+              </p>
+            </div>
+          </div>
+        ) : validationErrorType === 'ENDED' ? (
+          <div className="py-6 text-center space-y-4">
+            <div className="w-12 h-12 rounded-full bg-zinc-950/60 border border-zinc-805/30 flex items-center justify-center mx-auto text-zinc-400">
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              </svg>
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-sm font-semibold text-zinc-300">This support session has ended</h3>
+              <p className="text-xs text-zinc-500 leading-relaxed max-w-xs mx-auto">
+                The agent has completed or terminated this support session. If you still need help, please request a new invite.
               </p>
             </div>
           </div>

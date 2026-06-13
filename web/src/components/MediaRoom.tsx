@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from 'react';
-import { Room, Track, RoomEvent } from 'livekit-client';
+import { Room, Track, RoomEvent, VideoPresets } from 'livekit-client';
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -10,6 +10,7 @@ import {
   useParticipants,
   useRoomContext,
   VideoTrack,
+  useConnectionState,
 } from '@livekit/components-react';
 import { apiClient } from '@/lib/api-client';
 
@@ -20,12 +21,55 @@ interface MediaRoomProps {
   sessionStatus: string;
 }
 
+const ROOM_OPTIONS = {
+  adaptiveStream: false,
+  dynacast: false,
+  videoCaptureDefaults: {
+    resolution: VideoPresets.h720.resolution,
+  },
+  publishDefaults: {
+    simulcast: false,
+    videoCodec: 'vp8' as const,
+    videoEncoding: VideoPresets.h720.encoding,
+  }
+};
+
 export default function MediaRoom({ sessionId, userId, role, sessionStatus }: MediaRoomProps) {
+  const recordTiming = (event: string) => {
+    if (typeof window === 'undefined') return;
+    const w = window as any;
+    if (!w.__media_timing) w.__media_timing = {};
+    if (!w.__media_timing[event]) {
+      w.__media_timing[event] = performance.now();
+      console.log(`[Media Lifecycle] ${event} at ${w.__media_timing[event].toFixed(2)}ms`);
+      
+      if (event === 'remote_video_rendered') {
+        const t = w.__media_timing;
+        const joinClicked = t.join_clicked || w.__join_clicked || t.get_user_media_start;
+        console.log('--- MEDIA LIFECYCLE TIMING BREAKDOWN ---');
+        console.log(`1. Join to GetUserMedia Start: ${(t.get_user_media_start - joinClicked).toFixed(2)}ms`);
+        console.log(`2. GetUserMedia Duration: ${(t.get_user_media_success - t.get_user_media_start).toFixed(2)}ms`);
+        console.log(`3. Token Request Start: ${(t.livekit_token_requested - t.get_user_media_success).toFixed(2)}ms`);
+        console.log(`4. Token Fetch Duration: ${(t.livekit_token_received - t.livekit_token_requested).toFixed(2)}ms`);
+        console.log(`5. Connect Called: ${(t.livekit_connect_called - t.livekit_token_received).toFixed(2)}ms`);
+        console.log(`6. Room Connection Duration: ${(t.room_connected - t.livekit_connect_called).toFixed(2)}ms`);
+        console.log(`7. Local Track Publish Delay: ${(t.local_track_published - t.room_connected).toFixed(2)}ms`);
+        console.log(`8. Local Video Rendered: ${(t.local_video_rendered - t.local_track_published).toFixed(2)}ms`);
+        console.log(`9. Remote Participant Discovered: ${(t.remote_participant_discovered - t.room_connected).toFixed(2)}ms`);
+        console.log(`10. Remote Track Subscribed: ${(t.remote_track_subscribed - t.remote_participant_discovered).toFixed(2)}ms`);
+        console.log(`11. Remote Video Rendered: ${(t.remote_video_rendered - t.remote_track_subscribed).toFixed(2)}ms`);
+        console.log(`Total Time to Remote Video: ${(t.remote_video_rendered - joinClicked).toFixed(2)}ms`);
+        console.log('----------------------------------------');
+      }
+    }
+  };
+
   const [token, setToken] = useState<string | null>(null);
   const [livekitUrl, setLivekitUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deviceError, setDeviceError] = useState<string | null>(null);
+
 
   // 1. Hardware State Preferences with localStorage persistence
   const [isCameraPreConnected, setIsCameraPreConnected] = useState<boolean>(() => {
@@ -57,15 +101,15 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
     const name = err.name || '';
     
     if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-      msg = `${deviceType === 'both' ? 'Camera/Mic' : deviceType === 'camera' ? 'Camera' : 'Microphone'} permission denied`;
+      msg = `Grant ${deviceType === 'both' ? 'camera/microphone' : deviceType === 'camera' ? 'camera' : 'microphone'} permission and retry.`;
     } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
-      msg = `No ${deviceType === 'both' ? 'camera/mic' : deviceType} detected`;
+      msg = `No ${deviceType === 'both' ? 'camera/microphone' : deviceType === 'camera' ? 'camera' : 'microphone'} detected. Verify connection and retry.`;
     } else if (name === 'NotReadableError' || name === 'TrackStartError') {
-      msg = `${deviceType === 'both' ? 'Camera/Mic' : deviceType === 'camera' ? 'Camera' : 'Microphone'} currently in use`;
+      msg = `${deviceType === 'both' ? 'Camera/microphone' : deviceType === 'camera' ? 'Camera' : 'Microphone'} in use by another app. Close other apps and retry.`;
     } else if (name === 'OverconstrainedError' || name === 'ConstraintNotSatisfiedError') {
-      msg = `${deviceType === 'both' ? 'Hardware' : deviceType === 'camera' ? 'Camera' : 'Microphone'} constraints not met`;
+      msg = `Hardware constraints not met. Try standard quality mode.`;
     } else {
-      msg = `${deviceType === 'both' ? 'Camera/Mic' : deviceType === 'camera' ? 'Camera' : 'Microphone'} unavailable`;
+      msg = `Camera/Mic unavailable. Please check browser permissions and click retry.`;
     }
     setDeviceError(msg);
   };
@@ -74,6 +118,10 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
   const requestCameraPermission = async () => {
     try {
       setDeviceError(null);
+      if (typeof window !== 'undefined' && !navigator.mediaDevices) {
+        setDeviceError('Camera/Mic blocked: Browser requires HTTPS to access media on an IP address');
+        return;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
       stream.getTracks().forEach(t => t.stop());
       setIsCameraPreConnected(true);
@@ -93,6 +141,10 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
   const requestMicrophonePermission = async () => {
     try {
       setDeviceError(null);
+      if (typeof window !== 'undefined' && !navigator.mediaDevices) {
+        setDeviceError('Camera/Mic blocked: Browser requires HTTPS to access media on an IP address');
+        return;
+      }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach(t => t.stop());
       setIsMicrophonePreConnected(true);
@@ -117,7 +169,12 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
 
   // 2. Hardware / Device enumeration and diagnostics check
   useEffect(() => {
-    if (typeof window === 'undefined' || !navigator.mediaDevices) return;
+    if (typeof window === 'undefined') return;
+
+    if (!navigator.mediaDevices) {
+      setDeviceError('Camera access requires HTTPS on mobile devices. For local Wi-Fi testing, configure chrome://flags/#unsafely-treat-insecure-origin-as-secure or use a secure proxy.');
+      return;
+    }
 
     async function checkDevices() {
       try {
@@ -135,8 +192,11 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
         }
 
         try {
+          recordTiming('get_user_media_start');
           const stream = await navigator.mediaDevices.getUserMedia({ video: hasVideo, audio: hasAudio });
-          stream.getTracks().forEach(t => t.stop());
+          recordTiming('get_user_media_success');
+          // Important: Stop the tracks immediately. We just wanted to trigger the permission prompt
+          stream.getTracks().forEach(track => track.stop());
           setDeviceError(null);
         } catch (err: any) {
           handleDeviceError(err, hasVideo && hasAudio ? 'both' : hasVideo ? 'camera' : 'microphone');
@@ -168,6 +228,11 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
           localPreviewStream.getTracks().forEach(t => t.stop());
           setLocalPreviewStream(null);
         }
+        return;
+      }
+
+      if (typeof window !== 'undefined' && !navigator.mediaDevices) {
+        setLocalPreviewStream(null);
         return;
       }
 
@@ -219,13 +284,22 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
         setLoading(true);
         setError(null);
         console.log('[MediaRoom] Fetching LiveKit token from backend...', { sessionId, userId, role });
+        recordTiming('livekit_token_requested');
         const res = await apiClient.getLiveKitToken(sessionId, userId, role);
+        recordTiming('livekit_token_received');
         console.log('[MediaRoom] Token fetch succeeded:', { hasToken: !!res.token, url: res.livekit_url });
         if (active) {
           setToken(res.token);
-          const publicUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL || 'ws://localhost:7880';
-          console.log('[MediaRoom] Using public LiveKit URL:', publicUrl, '(backend returned:', res.livekit_url, ')');
-          setLivekitUrl(publicUrl);
+          const rawUrl = res.livekit_url || process.env.NEXT_PUBLIC_LIVEKIT_URL || 'ws://localhost:7880';
+          let resolvedUrl = rawUrl;
+          if (typeof window !== 'undefined') {
+            const hostname = window.location.hostname;
+            if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+              resolvedUrl = rawUrl.replace(/localhost|127\.0\.0\.1/g, hostname);
+            }
+          }
+          console.log('[MediaRoom] Using resolved LiveKit URL:', resolvedUrl, '(raw URL:', rawUrl, ')');
+          setLivekitUrl(resolvedUrl);
         }
       } catch (err: any) {
         console.error('[MediaRoom] Token fetch failed:', err);
@@ -246,6 +320,31 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
     };
   }, [sessionId, userId, role, sessionStatus]);
 
+  const handleReconnectMedia = async () => {
+    try {
+      setError(null);
+      setToken(null);
+      setLoading(true);
+      console.log('[MediaRoom] Manual reconnect triggered. Re-fetching token...');
+      const res = await apiClient.getLiveKitToken(sessionId, userId, role);
+      setToken(res.token);
+      const publicUrl = res.livekit_url || process.env.NEXT_PUBLIC_LIVEKIT_URL || 'ws://localhost:7880';
+      let resolvedUrl = publicUrl;
+      if (typeof window !== 'undefined') {
+        const hostname = window.location.hostname;
+        if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+          resolvedUrl = publicUrl.replace(/localhost|127\.0\.0\.1/g, hostname);
+        }
+      }
+      setLivekitUrl(resolvedUrl);
+    } catch (err: any) {
+      console.error('[MediaRoom] Manual reconnect failed:', err);
+      setError(err.message || 'Media server offline');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const visualMarker = (
     <div id="media-room-marker" className="bg-zinc-950 border-b border-zinc-800 text-zinc-500 font-bold text-center py-1.5 text-[10px] uppercase tracking-wider select-none flex items-center justify-center gap-1.5">
       <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
@@ -264,7 +363,7 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
           <span className="block text-[10px] text-zinc-400 font-normal mt-0.5">The application remains fully usable. You can still use chat and see others.</span>
         </div>
       </div>
-      <div className="flex gap-2 shrink-0">
+      <div className="flex gap-2 shrink-0 flex-wrap">
         <button
           onClick={requestCameraPermission}
           className="px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold uppercase tracking-wider transition-all active:scale-95"
@@ -276,6 +375,12 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
           className="px-2.5 py-1 rounded bg-violet-600 hover:bg-violet-500 text-white text-[10px] font-bold uppercase tracking-wider transition-all active:scale-95"
         >
           Retry Mic
+        </button>
+        <button
+          onClick={handleReconnectMedia}
+          className="px-2.5 py-1 rounded bg-zinc-700 hover:bg-zinc-650 text-white text-[10px] font-bold uppercase tracking-wider transition-all active:scale-95"
+        >
+          Retry Media
         </button>
       </div>
     </div>
@@ -298,7 +403,8 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
 
   // 5. Render Local Queue Preview Mode if CREATED
   if (sessionStatus === 'CREATED') {
-    const expectedRemoteRole = role === 'agent' ? 'customer' : 'agent';
+    const expectedRemoteRole = role === 'agent' ? 'Customer' : 'Support Agent';
+    const currentRoleLabel = role === 'agent' ? 'Support Agent' : 'Customer';
     return (
       <div className="rounded-2xl border border-zinc-800 bg-zinc-900 overflow-hidden shadow-xl shadow-black/40 flex flex-col" style={{ minHeight: '380px' }}>
         {visualMarker}
@@ -328,7 +434,7 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
 
             {/* Local Queue Status overlay */}
             <div className="absolute top-3 left-3 bg-zinc-950/90 border border-zinc-800/80 rounded-lg p-2.5 text-[10px] text-zinc-300 space-y-1.5 backdrop-blur-sm shadow-xl min-w-[120px] z-10 select-none">
-              <div className="font-bold text-indigo-400 uppercase tracking-wider border-b border-zinc-800/50 pb-0.5">You ({role})</div>
+              <div className="font-bold text-indigo-400 uppercase tracking-wider border-b border-zinc-800/50 pb-0.5">You ({currentRoleLabel})</div>
               <div className="flex items-center justify-between gap-2.5">
                 <span className="text-zinc-500">Camera:</span>
                 <span className={`font-semibold ${isCameraPreConnected ? 'text-emerald-400' : 'text-red-400'}`}>
@@ -419,23 +525,6 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
     );
   }
 
-  const handleReconnectMedia = async () => {
-    try {
-      setError(null);
-      setToken(null);
-      setLoading(true);
-      console.log('[MediaRoom] Manual reconnect triggered. Re-fetching token...');
-      const res = await apiClient.getLiveKitToken(sessionId, userId, role);
-      setToken(res.token);
-      const publicUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL || 'ws://localhost:7880';
-      setLivekitUrl(publicUrl);
-    } catch (err: any) {
-      console.error('[MediaRoom] Manual reconnect failed:', err);
-      setError(err.message || 'Media server offline');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   if (loading) {
     return (
@@ -452,6 +541,8 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
       </div>
     );
   }
+
+
 
   if (error || !token || !livekitUrl) {
     return (
@@ -491,6 +582,7 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
         token={token}
         serverUrl={livekitUrl}
         connect={true}
+        options={ROOM_OPTIONS}
         data-lk-theme="default"
         className="flex-1 flex flex-col min-h-0"
       >
@@ -501,6 +593,7 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
           setIsCameraPreConnected={setIsCameraPreConnected}
           setIsMicrophonePreConnected={setIsMicrophonePreConnected}
           handleReconnectMedia={handleReconnectMedia}
+          onConnected={() => {}}
         />
         <RoomAudioRenderer />
       </LiveKitRoom>
@@ -556,6 +649,7 @@ function MediaGrid({
   setIsCameraPreConnected,
   setIsMicrophonePreConnected,
   handleReconnectMedia,
+  onConnected,
 }: {
   role: 'agent' | 'customer';
   isCameraPreConnected: boolean;
@@ -563,6 +657,7 @@ function MediaGrid({
   setIsCameraPreConnected: (val: boolean) => void;
   setIsMicrophonePreConnected: (val: boolean) => void;
   handleReconnectMedia: () => Promise<void>;
+  onConnected: () => void;
 }) {
   const tracks = useTracks(
     [
@@ -578,11 +673,14 @@ function MediaGrid({
   const [showDiagnostics, setShowDiagnostics] = useState(false);
 
   const remoteParticipant = participants.find((p) => p.identity !== localParticipant?.identity);
-  const expectedRemoteRole = role === 'agent' ? 'customer' : 'agent';
+  const expectedRemoteRole = role === 'agent' ? 'Customer' : 'Support Agent';
 
-  // 1. Connection Status Watchdog State
-  const [connectionStatus, setConnectionStatus] = useState<'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'DISCONNECTED' | 'FAILED'>('DISCONNECTED');
-  const [reconnectCount, setReconnectCount] = useState(0);
+  // 1. Connection Status derived directly from LiveKit SDK context
+  const rawConnectionStatus = useConnectionState();
+  const connectionStatus = (rawConnectionStatus === 'connected' ? 'CONNECTED' :
+                            rawConnectionStatus === 'connecting' ? 'CONNECTING' :
+                            rawConnectionStatus === 'reconnecting' ? 'RECONNECTING' :
+                            'DISCONNECTED');
 
   // 2. Local UI Target States for lag-free visual response
   const [localCameraActive, setLocalCameraActive] = useState(isCameraPreConnected);
@@ -592,33 +690,70 @@ function MediaGrid({
   const [cameraSyncing, setCameraSyncing] = useState(false);
   const [micSyncing, setMicSyncing] = useState(false);
 
-  // Watchdog reset on successful connection
   useEffect(() => {
-    if (connectionStatus === 'CONNECTED') {
-      setReconnectCount(0);
-    }
-  }, [connectionStatus]);
-
-  // Watchdog backoff reconnect triggers
-  useEffect(() => {
-    if (connectionStatus !== 'DISCONNECTED' && connectionStatus !== 'FAILED') return;
-    if (reconnectCount >= 3) return;
-
-    console.log(`[Watchdog] Detected offline media state. Queueing auto-reconnect attempt ${reconnectCount + 1}/3...`);
-    const delay = Math.pow(2, reconnectCount) * 2000;
-    
-    const timer = setTimeout(async () => {
-      try {
-        console.log(`[Watchdog] Auto-reconnecting...`);
-        await handleReconnectMedia();
-        setReconnectCount(prev => prev + 1);
-      } catch (err) {
-        console.error('[Watchdog] Auto-reconnect failed:', err);
+    if (rawConnectionStatus === 'connected') {
+      const w = window as any;
+      if (w.__media_timing && !w.__media_timing['room_connected']) {
+        w.__media_timing['room_connected'] = performance.now();
+        console.log(`[Media Lifecycle] room_connected at ${w.__media_timing['room_connected'].toFixed(2)}ms`);
       }
-    }, delay);
+      onConnected();
+    } else if (rawConnectionStatus === 'connecting') {
+      const w = window as any;
+      if (w.__media_timing && !w.__media_timing['livekit_connect_called']) {
+        w.__media_timing['livekit_connect_called'] = performance.now();
+        console.log(`[Media Lifecycle] livekit_connect_called at ${w.__media_timing['livekit_connect_called'].toFixed(2)}ms`);
+      }
+    }
+  }, [rawConnectionStatus, onConnected]);
 
-    return () => clearTimeout(timer);
-  }, [connectionStatus, reconnectCount, handleReconnectMedia]);
+  // Lifecycle Timing Trackers
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const w = window as any;
+    if (!w.__media_timing) w.__media_timing = {};
+    const t = w.__media_timing;
+    
+    const record = (event: string) => {
+      if (!t[event]) {
+        t[event] = performance.now();
+        console.log(`[Media Lifecycle] ${event} at ${t[event].toFixed(2)}ms`);
+        
+        if (event === 'remote_video_rendered') {
+          const joinClicked = t.join_clicked || w.__join_clicked || t.get_user_media_start || 0;
+          console.log('--- MEDIA LIFECYCLE TIMING BREAKDOWN ---');
+          console.log(`1. Join to GetUserMedia Start: ${(t.get_user_media_start - joinClicked).toFixed(2)}ms`);
+          console.log(`2. GetUserMedia Duration: ${(t.get_user_media_success - t.get_user_media_start).toFixed(2)}ms`);
+          console.log(`3. Token Request Start: ${(t.livekit_token_requested - t.get_user_media_success).toFixed(2)}ms`);
+          console.log(`4. Token Fetch Duration: ${(t.livekit_token_received - t.livekit_token_requested).toFixed(2)}ms`);
+          console.log(`5. Connect Called: ${(t.livekit_connect_called - t.livekit_token_received).toFixed(2)}ms`);
+          console.log(`6. Room Connection Duration: ${(t.room_connected - t.livekit_connect_called).toFixed(2)}ms`);
+          console.log(`7. Local Track Publish Delay: ${(t.local_track_published - t.room_connected).toFixed(2)}ms`);
+          console.log(`8. Local Video Rendered: ${(t.local_video_rendered - t.local_track_published).toFixed(2)}ms`);
+          console.log(`9. Remote Participant Discovered: ${(t.remote_participant_discovered - t.room_connected).toFixed(2)}ms`);
+          console.log(`10. Remote Track Subscribed: ${(t.remote_track_subscribed - t.remote_participant_discovered).toFixed(2)}ms`);
+          console.log(`11. Remote Video Rendered: ${(t.remote_video_rendered - t.remote_track_subscribed).toFixed(2)}ms`);
+          console.log(`Total Time to Remote Video: ${(t.remote_video_rendered - joinClicked).toFixed(2)}ms`);
+          console.log('----------------------------------------');
+        }
+      }
+    };
+
+    if (localParticipant.isCameraEnabled) record('local_track_published');
+    if (tracks.some(tr => tr.participant.identity === localParticipant.identity && tr.source === Track.Source.Camera)) {
+      record('local_video_rendered');
+    }
+    
+    if (remoteParticipant) {
+      record('remote_participant_discovered');
+      if (remoteParticipant.getTrackPublications().some(p => p.kind === 'video' && p.isSubscribed)) {
+        record('remote_track_subscribed');
+      }
+      if (tracks.some(tr => tr.participant.identity === remoteParticipant.identity && tr.source === Track.Source.Camera)) {
+        record('remote_video_rendered');
+      }
+    }
+  }, [localParticipant.isCameraEnabled, remoteParticipant, tracks]);
 
   // LiveKit Diagnostic Event Listeners
   useEffect(() => {
@@ -641,19 +776,6 @@ function MediaGrid({
       }));
     };
 
-    const handleStateChange = (state: string) => {
-      console.log(`[LK-DIAG] Connection State Change: ${state}`);
-      if (state === 'connected') {
-        setConnectionStatus('CONNECTED');
-      } else if (state === 'connecting') {
-        setConnectionStatus('CONNECTING');
-      } else if (state === 'reconnecting') {
-        setConnectionStatus('RECONNECTING');
-      } else if (state === 'disconnected') {
-        setConnectionStatus('DISCONNECTED');
-      }
-    };
-
     const events = [
       RoomEvent.ParticipantConnected,
       RoomEvent.ParticipantDisconnected,
@@ -663,26 +785,15 @@ function MediaGrid({
       RoomEvent.TrackUnsubscribed,
       RoomEvent.TrackMuted,
       RoomEvent.TrackUnmuted,
-      RoomEvent.ConnectionStateChanged,
     ];
 
     events.forEach(evt => {
-      if (evt === RoomEvent.ConnectionStateChanged) {
-        room.on(evt, handleStateChange);
-      } else {
-        room.on(evt, (...args: any[]) => logEvent(evt, ...args));
-      }
+      room.on(evt, (...args: any[]) => logEvent(evt, ...args));
     });
-
-    handleStateChange(room.state);
 
     return () => {
       events.forEach(evt => {
-        if (evt === RoomEvent.ConnectionStateChanged) {
-          room.off(evt, handleStateChange);
-        } else {
-          room.off(evt, (...args: any[]) => logEvent(evt, ...args));
-        }
+        room.off(evt, (...args: any[]) => logEvent(evt, ...args));
       });
     };
   }, [room]);
@@ -837,32 +948,32 @@ function MediaGrid({
         
         {/* 1. Local Participant Tile (Always Visible) */}
         <div className="relative rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800 flex items-center justify-center">
-          {localCameraActive ? (
-            localVideoTrackRef ? (
-              <div className="w-full h-full [&>video]:object-cover relative">
-                <VideoTrack trackRef={localVideoTrackRef} className="w-full h-full object-cover scale-x-[-1]" />
-                <LocalVideoTileDiagnostic
-                  identity={localParticipant?.identity || 'unknown'}
-                  sid={localParticipant?.sid || 'unknown'}
-                  trackSid={localVideoTrackRef?.publication?.trackSid || localVideoTrackRef?.track?.sid || 'unknown'}
-                  isPublished={isLocalVideoPublished}
-                />
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none gap-2">
-                <svg className="w-8 h-8 animate-spin text-indigo-500" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-400">Starting camera...</span>
-              </div>
-            )
-          ) : (
-            <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none">
+          {localVideoTrackRef && (
+            <div className={`w-full h-full [&>video]:object-cover absolute inset-0 z-10 ${!localCameraActive ? 'hidden' : ''}`}>
+              <VideoTrack trackRef={localVideoTrackRef} className="w-full h-full object-cover scale-x-[-1]" />
+              <LocalVideoTileDiagnostic
+                identity={localParticipant?.identity || 'unknown'}
+                sid={localParticipant?.sid || 'unknown'}
+                trackSid={localVideoTrackRef?.publication?.trackSid || localVideoTrackRef?.track?.sid || 'unknown'}
+                isPublished={isLocalVideoPublished}
+              />
+            </div>
+          )}
+          
+          {!localCameraActive ? (
+            <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none z-0">
               <svg className="w-12 h-12 mb-2 text-zinc-750" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
               </svg>
               <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-500">🔴 Camera Off</span>
+            </div>
+          ) : !localVideoTrackRef && (
+            <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none gap-2 z-0">
+              <svg className="w-8 h-8 animate-spin text-indigo-500" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-400">Starting camera...</span>
             </div>
           )}
 
@@ -891,28 +1002,30 @@ function MediaGrid({
         {/* Remote Participant Tile */}
         <div className="relative rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800 flex items-center justify-center">
           {remoteParticipant ? (
-            remoteParticipant.isCameraEnabled ? (
-              remoteVideoTrackRef ? (
-                <div className="w-full h-full [&>video]:object-cover relative">
+            <>
+              {remoteVideoTrackRef && (
+                <div className={`w-full h-full [&>video]:object-cover absolute inset-0 z-10 ${!remoteParticipant.isCameraEnabled ? 'hidden' : ''}`}>
                   <VideoTrack trackRef={remoteVideoTrackRef} className="w-full h-full object-cover" />
                 </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none gap-2">
+              )}
+              
+              {!remoteParticipant.isCameraEnabled ? (
+                <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none z-0">
+                  <svg className="w-12 h-12 mb-2 text-zinc-750" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-500">🔴 Camera Off</span>
+                </div>
+              ) : !remoteVideoTrackRef && (
+                <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none gap-2 z-0">
                   <svg className="w-8 h-8 animate-spin text-violet-500" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
                   <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-400">Loading feed...</span>
                 </div>
-              )
-            ) : (
-              <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none">
-                <svg className="w-12 h-12 mb-2 text-zinc-750" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-                <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-500">🔴 Camera Off</span>
-              </div>
-            )
+              )}
+            </>
           ) : (
             /* 5. Remote Participant Waiting State */
             <div className="flex flex-col items-center justify-center text-zinc-500 text-center px-4 bg-zinc-950/20 w-full h-full select-none">

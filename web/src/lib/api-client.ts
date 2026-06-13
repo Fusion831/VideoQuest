@@ -14,7 +14,14 @@ async function fetchJson<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const url = `${API_BASE_URL}${endpoint}`;
+  let resolvedBase = API_BASE_URL;
+  if (typeof window !== 'undefined') {
+    const hostname = window.location.hostname;
+    if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+      resolvedBase = API_BASE_URL.replace(/localhost|127\.0\.0\.1/g, hostname);
+    }
+  }
+  const url = `${resolvedBase}${endpoint}`;
   
   // Set JSON headers by default
   const headers = new Headers(options.headers);

@@ -3,8 +3,9 @@ bind_addresses:
   - ""
 rtc:
   tcp_port: 7881
+  udp_port: 7882
   port_range_start: 50000
-  port_range_end: 50050
+  port_range_end: 50500
   use_external_ip: false
 keys:
   devkey: secret01234567890123456789abcdef

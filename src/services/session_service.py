@@ -73,6 +73,10 @@ class SessionService:
         if not session:
             raise InvalidInvite(invite_token, "Invite token not found")
         
+        from datetime import datetime, timezone, timedelta
+        if datetime.now(timezone.utc) - session.created_at > timedelta(hours=24):
+            raise InvalidInvite(invite_token, "Invite token has expired")
+
         if not session.is_invite_valid:
             raise InvalidInvite(invite_token, "Session has already ended")
             

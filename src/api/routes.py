@@ -175,6 +175,20 @@ async def join_session(
             identity=identity,
             invite_token=request.invite_token,
         )
+
+        # Broadcast PARTICIPANT_JOINED event for real-time roster updates
+        event_type = "PARTICIPANT_RECONNECTED" if existing else "PARTICIPANT_JOINED"
+        await ws_manager.broadcast_to_session(
+            str(session_id),
+            event_type,
+            {
+                "participant_id": str(participant.id),
+                "user_id": participant.user_id,
+                "role": participant.role.value,
+                "connection_status": participant.connection_status.value,
+            }
+        )
+
         # Return 200 if participant already existed (reconnect), 201 if newly created
         status_code = status.HTTP_200_OK if existing else status.HTTP_201_CREATED
         from fastapi.responses import JSONResponse
@@ -204,6 +218,19 @@ async def leave_session(
     """Leave the session. This endpoint is idempotent."""
     try:
         participant = await service.leave_session(session_id=session_id, participant_id=participant_id)
+
+        # Broadcast PARTICIPANT_LEFT for real-time roster updates
+        await ws_manager.broadcast_to_session(
+            str(session_id),
+            "PARTICIPANT_LEFT",
+            {
+                "participant_id": str(participant.id),
+                "user_id": participant.user_id,
+                "role": participant.role.value,
+                "connection_status": participant.connection_status.value,
+            }
+        )
+
         return participant
     except ParticipantNotFound as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)
@@ -220,6 +247,19 @@ async def disconnect_participant(
     """Mark the participant connection status as DISCONNECTED. This endpoint is idempotent."""
     try:
         participant = await service.disconnect_participant(session_id=session_id, participant_id=participant_id)
+
+        # Broadcast PARTICIPANT_DISCONNECTED for real-time roster updates
+        await ws_manager.broadcast_to_session(
+            str(session_id),
+            "PARTICIPANT_DISCONNECTED",
+            {
+                "participant_id": str(participant.id),
+                "user_id": participant.user_id,
+                "role": participant.role.value,
+                "connection_status": participant.connection_status.value,
+            }
+        )
+
         return participant
     except ParticipantNotFound as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e.message)

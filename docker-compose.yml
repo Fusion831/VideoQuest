@@ -71,7 +71,7 @@ services:
     restart: always
 
   livekit:
-    image: livekit/livekit-server:v1.5
+    image: livekit/livekit-server:latest
     container_name: videoquest-livekit
     command: --config /etc/livekit.yaml --node-ip ${LOCAL_IP:-127.0.0.1}
     volumes:
@@ -79,8 +79,8 @@ services:
     ports:
       - "7880:7880"
       - "7881:7881"
-      - "7882:7882"
-      - "50000-50050:50000-50050/udp"
+      - "7882:7882/udp"
+      - "50000-50500:50000-50500/udp"
     restart: always
 
 volumes:

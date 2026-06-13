@@ -37,26 +37,69 @@ export default function SessionRoomPage({ params }: PageProps) {
   // Resolve identity: URL query params first, then session-specific storage, then global agent auth
   const [resolvedUserId, setResolvedUserId] = useState<string | null>(() => {
     if (typeof window === 'undefined') return currentUserId;
-    const sessionVal = currentUserId || localStorage.getItem(`${storedIdentityKey}_userId`);
-    const globalVal = localStorage.getItem('vq_auth_userId');
-    return sessionVal || globalVal;
-  });
-  const [resolvedRole, setResolvedRole] = useState<'agent' | 'customer' | null>(() => {
-    if (typeof window === 'undefined') return currentRole;
-    const sessionVal = localStorage.getItem(`${storedIdentityKey}_role`) as 'agent' | 'customer' | null;
-    const globalVal = localStorage.getItem('vq_auth_role') as 'agent' | 'customer' | null;
-    return currentRole || sessionVal || globalVal;
+    const globalUserId = localStorage.getItem('vq_auth_userId');
+    const globalRole = localStorage.getItem('vq_auth_role');
+    if (globalRole === 'agent' && globalUserId) return globalUserId;
+    const sessionUserId = localStorage.getItem(`${storedIdentityKey}_userId`);
+    return sessionUserId || currentUserId;
   });
 
-  // Keep state and localStorage in sync
+  const [resolvedRole, setResolvedRole] = useState<'agent' | 'customer' | null>(() => {
+    if (typeof window === 'undefined') return currentRole;
+    const globalRole = localStorage.getItem('vq_auth_role') as 'agent' | 'customer' | null;
+    if (globalRole === 'agent') return 'agent';
+    const sessionRole = localStorage.getItem(`${storedIdentityKey}_role`) as 'agent' | 'customer' | null;
+    return sessionRole || currentRole;
+  });
+
+  // Keep state and localStorage in sync & log identity resolution path
   useEffect(() => {
-    if (resolvedUserId && resolvedRole) {
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(`${storedIdentityKey}_userId`, resolvedUserId);
-        localStorage.setItem(`${storedIdentityKey}_role`, resolvedRole);
-      }
+    if (typeof window === 'undefined') return;
+
+    const globalUserId = localStorage.getItem('vq_auth_userId');
+    const globalRole = localStorage.getItem('vq_auth_role') as 'agent' | 'customer' | null;
+    const globalToken = localStorage.getItem('vq_auth_token');
+
+    const sessionUserId = localStorage.getItem(`${storedIdentityKey}_userId`);
+    const sessionRole = localStorage.getItem(`${storedIdentityKey}_role`) as 'agent' | 'customer' | null;
+
+    let finalUserId = resolvedUserId;
+    let finalRole = resolvedRole;
+    let source = 'state defaults';
+
+    if (globalRole === 'agent' && globalUserId) {
+      finalUserId = globalUserId;
+      finalRole = 'agent';
+      source = 'global agent authentication';
+    } else if (sessionUserId && sessionRole) {
+      finalUserId = sessionUserId;
+      finalRole = sessionRole;
+      source = 'session-specific localstorage';
+    } else if (currentUserId && currentRole) {
+      finalUserId = currentUserId;
+      finalRole = currentRole;
+      source = 'URL query parameters';
     }
-  }, [resolvedUserId, resolvedRole, storedIdentityKey]);
+
+    console.log('[IdentityResolution] Path Audit:', {
+      inputs: {
+        global: { user_id: globalUserId, role: globalRole, hasToken: !!globalToken },
+        session: { user_id: sessionUserId, role: sessionRole },
+        query: { user_id: currentUserId, role: currentRole }
+      },
+      resolved: { user_id: finalUserId, role: finalRole },
+      resolvedFrom: source
+    });
+
+    if (finalUserId !== resolvedUserId) setResolvedUserId(finalUserId);
+    if (finalRole !== resolvedRole) setResolvedRole(finalRole);
+
+    // Save identity to session storage (never downgrade agent to customer)
+    if (finalUserId && finalRole) {
+      localStorage.setItem(`${storedIdentityKey}_userId`, finalUserId);
+      localStorage.setItem(`${storedIdentityKey}_role`, finalRole);
+    }
+  }, [resolvedUserId, resolvedRole, storedIdentityKey, currentUserId, currentRole]);
 
   // Find current participant ID from the loaded participants list
   const currentParticipant = participants.find(
@@ -68,10 +111,11 @@ export default function SessionRoomPage({ params }: PageProps) {
   const refreshRoomData = async () => {
     if (!sessionId) return;
     try {
+      const isAgent = resolvedRole === 'agent';
       const [sessionRes, participantsRes, eventsRes, chatMessagesRes] = await Promise.all([
         apiClient.getSession(sessionId),
         apiClient.getSessionParticipants(sessionId),
-        apiClient.getSessionEvents(sessionId),
+        isAgent ? apiClient.getSessionEvents(sessionId) : Promise.resolve([]),
         apiClient.getChatMessages(sessionId),
       ]);
       setSession(sessionRes);
@@ -87,10 +131,10 @@ export default function SessionRoomPage({ params }: PageProps) {
     }
   };
 
-  // Fetch room data on mount or sessionId change
+  // Fetch room data on mount, sessionId or resolvedRole change
   useEffect(() => {
     refreshRoomData();
-  }, [sessionId]);
+  }, [sessionId, resolvedRole]);
 
   // Self-healing Auto-join flow: Join automatically if resolved identity is present but not in the roster
   useEffect(() => {
@@ -104,6 +148,7 @@ export default function SessionRoomPage({ params }: PageProps) {
     if (!exists) {
       console.log(`[AutoJoin] Participant ${resolvedUserId} (${resolvedRole}) not found in roster. Joining...`);
       setAutoJoinAttempted(true);
+      (window as any).__join_clicked = performance.now();
       apiClient.joinSession(
         sessionId,
         resolvedUserId,
@@ -125,18 +170,24 @@ export default function SessionRoomPage({ params }: PageProps) {
   useEffect(() => {
     if (!sessionId) return;
 
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
+    let resolvedApiBase = apiBase;
+    if (typeof window !== 'undefined') {
+      const hostname = window.location.hostname;
+      if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+        resolvedApiBase = apiBase.replace(/localhost|127\.0\.0\.1/g, hostname);
+      }
+    }
+
     let wsHost = 'ws://localhost:8000';
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? window.location.origin : '');
-    if (apiUrl) {
-      try {
-        const urlObj = new URL(apiUrl);
-        const wsProto = urlObj.protocol === 'https:' ? 'wss:' : 'ws:';
-        wsHost = `${wsProto}//${urlObj.host}`;
-      } catch (e) {
-        if (typeof window !== 'undefined') {
-          const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-          wsHost = `${wsProto}//${window.location.host}`;
-        }
+    try {
+      const urlObj = new URL(resolvedApiBase);
+      const wsProto = urlObj.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsHost = `${wsProto}//${urlObj.host}`;
+    } catch (e) {
+      if (typeof window !== 'undefined') {
+        const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsHost = `${wsProto}//${window.location.host}`;
       }
     }
 
@@ -159,18 +210,33 @@ export default function SessionRoomPage({ params }: PageProps) {
       try {
         const data = JSON.parse(event.data);
         console.log('[WebSocket onmessage] Received event:', data);
-        if (data.event_type === 'MESSAGE_RECEIVED') {
+
+        const eventType = data.event_type;
+
+        if (eventType === 'MESSAGE_RECEIVED') {
           setChatMessages((prev) => {
             if (prev.some((m) => m.id === data.payload.id)) return prev;
             return [...prev, data.payload];
           });
+          // System messages indicate state changes — refresh roster and session
           if (data.payload.message_type === 'SYSTEM') {
-            console.log('[WebSocket onmessage] MESSAGE_RECEIVED system event. Triggering refreshRoomData.');
+            console.log('[WebSocket] SYSTEM message received. Refreshing room data.');
             refreshRoomData();
           }
-        } else if (data.event_type === 'MESSAGE_SEND_ERROR') {
+        } else if (eventType === 'MESSAGE_SEND_ERROR') {
           setError(`Failed to send message: ${data.payload.reason}`);
+        } else if (
+          eventType === 'PARTICIPANT_JOINED' ||
+          eventType === 'PARTICIPANT_LEFT' ||
+          eventType === 'PARTICIPANT_DISCONNECTED' ||
+          eventType === 'PARTICIPANT_RECONNECTED'
+        ) {
+          // Participant lifecycle events — immediately refresh roster
+          console.log(`[WebSocket] ${eventType} event received for ${data.payload?.user_id}. Refreshing roster.`);
+          refreshRoomData();
         } else {
+          // Unknown/other events — still refresh as safety net
+          console.log(`[WebSocket] Unhandled event type: ${eventType}. Refreshing room data.`);
           refreshRoomData();
         }
       } catch (err) {
@@ -306,7 +372,7 @@ export default function SessionRoomPage({ params }: PageProps) {
               </div>
             )}
             <span className="font-semibold text-sm text-zinc-200">
-              {isAgent ? 'Support Diagnostics Center' : 'Customer Support Portal'}
+              {isAgent ? 'Support Session' : 'Support Session'}
             </span>
           </div>
 
@@ -348,7 +414,7 @@ export default function SessionRoomPage({ params }: PageProps) {
         )}
 
         {isAgent ? (
-          /* AGENT VIEW: Two columns layout with diagnostics at the bottom */
+          /* AGENT VIEW: Two columns layout with event log at the bottom */
           <div className="space-y-8">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
               {/* Left Column (8 cols): Media Room + Participants Roster */}
@@ -504,14 +570,14 @@ export default function SessionRoomPage({ params }: PageProps) {
               </div>
             </div>
 
-            {/* Collapsible Diagnostic Logs (Agent-Only) */}
+            {/* Collapsible Session Event Log (Agent-Only) */}
             <details className="group border border-zinc-850 rounded-2xl bg-zinc-900 shadow-xl shadow-black/45 overflow-hidden">
               <summary className="p-6 cursor-pointer select-none flex items-center justify-between font-semibold text-sm uppercase tracking-wider text-zinc-400 hover:bg-zinc-800/40 transition-all">
                 <span className="flex items-center gap-2.5">
                   <svg className="w-4 h-4 text-zinc-500 group-open:rotate-90 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
                   </svg>
-                  Diagnostic Event Log Feed
+                  Session Event Log
                 </span>
                 <span className="text-[10px] bg-zinc-950 px-2 py-0.5 rounded text-zinc-500 font-mono">
                   {events.length} events
@@ -521,7 +587,7 @@ export default function SessionRoomPage({ params }: PageProps) {
                 <div className="rounded-xl bg-zinc-950 border border-zinc-850 p-4 max-h-[300px] overflow-y-auto font-mono text-[11px] leading-relaxed space-y-3 scrollbar-thin">
                   {events.length === 0 ? (
                     <div className="text-center text-zinc-700 py-6">
-                      Waiting for state telemetry signals...
+                      No session events recorded yet.
                     </div>
                   ) : (
                     events.map((event) => (
@@ -547,7 +613,7 @@ export default function SessionRoomPage({ params }: PageProps) {
             </details>
           </div>
         ) : (
-          /* CUSTOMER VIEW: Media Room + Participants Roster (Left), Chat (Right) - Zero diagnostics or agent/admin controls */
+          /* CUSTOMER VIEW: Media Room + Participants Roster (Left), Chat (Right) - No admin controls */
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
             {/* Left Column (8 cols): Media Room + Participants Roster */}
             <div className="lg:col-span-8 space-y-6">
