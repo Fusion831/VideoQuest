@@ -49,28 +49,31 @@ class ParticipantService:
         invite_token: Optional[str] = None,
     ) -> DomainParticipant:
         """Add a participant to the session.
-        
+
         Validates:
         - Session exists and is not ended.
         - Agent user matches the session's assigned agent.
         - Customer provides the correct invite token.
-        
+
         Handles duplicate joins and browser refreshes:
         - If already CONNECTED, returns existing participant.
         - If DISCONNECTED, reconnects the participant and generates RECONNECTED event.
         - If LEFT, raises ParticipantAlreadyLeft.
-        
+
         Session Activation:
-        - Automatically transitions the session to ACTIVE if it is the first participant.
-        
-        All database operations are transactional.
+        - Automatically transitions the session to ACTIVE if it was CREATED or ABANDONED.
+
+        All database operations are transactional. Broadcasts fire after commit.
         """
+        from src.services.chat_service import flush_system_message, broadcast_system_message_payload
+        pending_broadcasts: list[tuple[uuid.UUID, dict]] = []
+
         try:
             # 1. Validate Session
             session = await self.session_repo.get_by_id(session_id)
             if not session:
                 raise SessionNotFound(str(session_id))
-            
+
             if session.status == SessionStatus.ENDED:
                 raise SessionAlreadyEnded(str(session_id))
 
@@ -95,13 +98,13 @@ class ParticipantService:
                     raise ParticipantAlreadyJoined(str(session_id), role.value)
 
                 if existing.connection_status == ParticipantConnectionStatus.CONNECTED:
-                    # Graceful duplicate join handling
+                    # Graceful duplicate join — idempotent
                     return existing
                 elif existing.connection_status == ParticipantConnectionStatus.DISCONNECTED:
-                    # Browser refresh / reconnect during join
+                    # Browser refresh / reconnect via join
                     existing.reconnect()
                     saved_participant = await self.participant_repo.save(existing)
-                    
+
                     event = DomainSessionEvent(
                         session_id=session_id,
                         event_type=SessionEventType.PARTICIPANT_RECONNECTED,
@@ -113,7 +116,33 @@ class ParticipantService:
                         },
                     )
                     await self.event_repo.save(event)
+                    payload = await flush_system_message(
+                        self.db_session, session_id,
+                        f"{saved_participant.role.value.title()} {saved_participant.user_id} reconnected"
+                    )
+                    pending_broadcasts.append((session_id, payload))
+
+                    # If session was ABANDONED, re-activate it
+                    if session.status == SessionStatus.ABANDONED:
+                        session.activate()
+                        await self.session_repo.save(session)
+                        activation_event = DomainSessionEvent(
+                            session_id=session_id,
+                            event_type=SessionEventType.SESSION_STARTED,
+                            metadata={
+                                "reconnected_participant_id": str(saved_participant.id),
+                                "reason": "Participant reconnected via join to abandoned session",
+                            },
+                        )
+                        await self.event_repo.save(activation_event)
+                        payload2 = await flush_system_message(self.db_session, session_id, "Support session resumed")
+                        pending_broadcasts.append((session_id, payload2))
+                        redis_presence = RedisPresenceService()
+                        await redis_presence.clear_abandonment_expiry(str(session_id))
+
                     await self.db_session.commit()
+                    for sid, p in pending_broadcasts:
+                        await broadcast_system_message_payload(sid, p)
                     return saved_participant
                 elif existing.connection_status == ParticipantConnectionStatus.LEFT:
                     raise ParticipantAlreadyLeft(str(existing.id))
@@ -138,12 +167,17 @@ class ParticipantService:
                 },
             )
             await self.event_repo.save(join_event)
+            payload = await flush_system_message(
+                self.db_session, session_id,
+                f"{saved_participant.role.value.title()} {saved_participant.user_id} joined the session"
+            )
+            pending_broadcasts.append((session_id, payload))
 
-            # 6. Automatic Session Activation
-            if session.status == SessionStatus.CREATED:
+            # 6. Automatic Session Activation (CREATED or ABANDONED → ACTIVE)
+            if session.status in (SessionStatus.CREATED, SessionStatus.ABANDONED):
                 session.activate()
                 await self.session_repo.save(session)
-                
+
                 activation_event = DomainSessionEvent(
                     session_id=session_id,
                     event_type=SessionEventType.SESSION_STARTED,
@@ -154,8 +188,17 @@ class ParticipantService:
                     },
                 )
                 await self.event_repo.save(activation_event)
+                payload2 = await flush_system_message(self.db_session, session_id, "Support session started")
+                pending_broadcasts.append((session_id, payload2))
+
+                if session.status == SessionStatus.ABANDONED:
+                    redis_presence = RedisPresenceService()
+                    await redis_presence.clear_abandonment_expiry(str(session_id))
 
             await self.db_session.commit()
+            # Bug #1 fix: broadcast AFTER commit
+            for sid, p in pending_broadcasts:
+                await broadcast_system_message_payload(sid, p)
             return saved_participant
 
         except Exception:
@@ -164,9 +207,12 @@ class ParticipantService:
 
     async def leave_session(self, session_id: uuid.UUID, participant_id: uuid.UUID) -> DomainParticipant:
         """Mark participant as LEFT (idempotent state transition).
-        
+
         Repeated calls return the left state without generating new events or mutating the DB.
         """
+        from src.services.chat_service import flush_system_message, broadcast_system_message_payload
+        pending_broadcasts: list[tuple[uuid.UUID, dict]] = []
+
         try:
             participant = await self.participant_repo.get_by_id(participant_id)
             if not participant or participant.session_id != session_id:
@@ -175,7 +221,7 @@ class ParticipantService:
             state_changed = participant.leave()
             if state_changed:
                 saved_participant = await self.participant_repo.save(participant)
-                
+
                 event = DomainSessionEvent(
                     session_id=session_id,
                     event_type=SessionEventType.PARTICIPANT_LEFT,
@@ -188,12 +234,18 @@ class ParticipantService:
                 )
                 await self.event_repo.save(event)
 
-                # Transition session to ENDED when a participant leaves
+                payload = await flush_system_message(
+                    self.db_session, session_id,
+                    f"{saved_participant.role.value.title()} {saved_participant.user_id} left the session"
+                )
+                pending_broadcasts.append((session_id, payload))
+
+                # Transition session to ENDED when a participant leaves (only if ACTIVE or ABANDONED)
                 session = await self.session_repo.get_by_id(session_id)
-                if session and session.status != SessionStatus.ENDED:
+                if session and session.status in (SessionStatus.ACTIVE, SessionStatus.ABANDONED, SessionStatus.CREATED):
                     session.end()
                     await self.session_repo.save(session)
-                    
+
                     end_event = DomainSessionEvent(
                         session_id=session_id,
                         event_type=SessionEventType.SESSION_ENDED,
@@ -204,14 +256,16 @@ class ParticipantService:
                         },
                     )
                     await self.event_repo.save(end_event)
-                    
+                    payload2 = await flush_system_message(self.db_session, session_id, "Support session ended")
+                    pending_broadcasts.append((session_id, payload2))
+
                     # Mark all other participants as LEFT too
                     all_participants = await self.participant_repo.get_by_session_id(session_id)
                     for p in all_participants:
                         if p.id != participant_id and p.connection_status != ParticipantConnectionStatus.LEFT:
                             p.leave()
                             await self.participant_repo.save(p)
-                            
+
                             p_left_event = DomainSessionEvent(
                                 session_id=session_id,
                                 event_type=SessionEventType.PARTICIPANT_LEFT,
@@ -224,8 +278,16 @@ class ParticipantService:
                                 },
                             )
                             await self.event_repo.save(p_left_event)
+                            payload3 = await flush_system_message(
+                                self.db_session, session_id,
+                                f"{p.role.value.title()} {p.user_id} left the session"
+                            )
+                            pending_broadcasts.append((session_id, payload3))
 
                 await self.db_session.commit()
+                # Bug #1 fix: broadcast AFTER commit
+                for sid, p in pending_broadcasts:
+                    await broadcast_system_message_payload(sid, p)
                 return saved_participant
 
             return participant
@@ -235,6 +297,9 @@ class ParticipantService:
 
     async def disconnect_participant(self, session_id: uuid.UUID, participant_id: uuid.UUID) -> DomainParticipant:
         """Mark participant as DISCONNECTED (idempotent transition)."""
+        from src.services.chat_service import flush_system_message, broadcast_system_message_payload
+        pending_broadcasts: list[tuple[uuid.UUID, dict]] = []
+
         try:
             session = await self.session_repo.get_by_id(session_id)
             if not session:
@@ -249,7 +314,7 @@ class ParticipantService:
             state_changed = participant.disconnect()
             if state_changed:
                 saved_participant = await self.participant_repo.save(participant)
-                
+
                 event = DomainSessionEvent(
                     session_id=session_id,
                     event_type=SessionEventType.PARTICIPANT_DISCONNECTED,
@@ -261,15 +326,21 @@ class ParticipantService:
                 )
                 await self.event_repo.save(event)
 
+                payload = await flush_system_message(
+                    self.db_session, session_id,
+                    f"{saved_participant.role.value.title()} {saved_participant.user_id} disconnected"
+                )
+                pending_broadcasts.append((session_id, payload))
+
                 # Check if all participants in the session are now disconnected or left
                 all_participants = await self.participant_repo.get_by_session_id(session_id)
                 any_connected = any(p.connection_status == ParticipantConnectionStatus.CONNECTED for p in all_participants)
-                
+
                 if not any_connected and session.status == SessionStatus.ACTIVE:
                     # Transition session to ABANDONED
                     session.abandon()
                     await self.session_repo.save(session)
-                    
+
                     abandon_event = DomainSessionEvent(
                         session_id=session_id,
                         event_type=SessionEventType.SESSION_ABANDONED,
@@ -279,12 +350,17 @@ class ParticipantService:
                         },
                     )
                     await self.event_repo.save(abandon_event)
-                    
+                    payload2 = await flush_system_message(self.db_session, session_id, "Support session abandoned — waiting for reconnect")
+                    pending_broadcasts.append((session_id, payload2))
+
                     # Set abandonment window in Redis (60s grace period)
                     redis_presence = RedisPresenceService()
                     await redis_presence.set_abandonment_expiry(str(session_id), ttl_seconds=60)
 
                 await self.db_session.commit()
+                # Bug #1 fix: broadcast AFTER commit
+                for sid, p in pending_broadcasts:
+                    await broadcast_system_message_payload(sid, p)
                 return saved_participant
 
             return participant
@@ -294,6 +370,9 @@ class ParticipantService:
 
     async def reconnect_participant(self, session_id: uuid.UUID, participant_id: uuid.UUID) -> DomainParticipant:
         """Restore participant to CONNECTED from DISCONNECTED state."""
+        from src.services.chat_service import flush_system_message, broadcast_system_message_payload
+        pending_broadcasts: list[tuple[uuid.UUID, dict]] = []
+
         try:
             # Validate session exists and not ended
             session = await self.session_repo.get_by_id(session_id)
@@ -309,7 +388,7 @@ class ParticipantService:
             state_changed = participant.reconnect()
             if state_changed:
                 saved_participant = await self.participant_repo.save(participant)
-                
+
                 event = DomainSessionEvent(
                     session_id=session_id,
                     event_type=SessionEventType.PARTICIPANT_RECONNECTED,
@@ -321,11 +400,17 @@ class ParticipantService:
                 )
                 await self.event_repo.save(event)
 
+                payload = await flush_system_message(
+                    self.db_session, session_id,
+                    f"{saved_participant.role.value.title()} {saved_participant.user_id} reconnected"
+                )
+                pending_broadcasts.append((session_id, payload))
+
                 # Transition session back to ACTIVE if it was ABANDONED
                 if session.status == SessionStatus.ABANDONED:
                     session.activate()
                     await self.session_repo.save(session)
-                    
+
                     activation_event = DomainSessionEvent(
                         session_id=session_id,
                         event_type=SessionEventType.SESSION_STARTED,
@@ -335,12 +420,17 @@ class ParticipantService:
                         },
                     )
                     await self.event_repo.save(activation_event)
-                    
+                    payload2 = await flush_system_message(self.db_session, session_id, "Support session resumed")
+                    pending_broadcasts.append((session_id, payload2))
+
                     # Clear abandonment from Redis
                     redis_presence = RedisPresenceService()
                     await redis_presence.clear_abandonment_expiry(str(session_id))
 
                 await self.db_session.commit()
+                # Bug #1 fix: broadcast AFTER commit
+                for sid, p in pending_broadcasts:
+                    await broadcast_system_message_payload(sid, p)
                 return saved_participant
 
             return participant

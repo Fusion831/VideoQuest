@@ -2,9 +2,9 @@ from typing import Optional, List, Tuple
 import uuid
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models import DomainSession, DomainParticipant
+from src.domain.models import DomainSession, DomainParticipant, DomainChatMessage
 from src.domain.events import DomainSessionEvent
-from src.infrastructure.models import SessionORM, SessionEventORM, ParticipantORM
+from src.infrastructure.models import SessionORM, SessionEventORM, ParticipantORM, ChatMessageORM
 
 
 class SessionRepository:
@@ -117,4 +117,30 @@ class ParticipantRepository:
         )
         orm_participant = result.scalar_one_or_none()
         return orm_participant.to_domain() if orm_participant else None
+
+
+class ChatMessageRepository:
+    def __init__(self, db_session: AsyncSession):
+        self.db_session = db_session
+
+    async def save(self, domain_message: DomainChatMessage) -> DomainChatMessage:
+        """Save a chat message."""
+        orm_message = ChatMessageORM.from_domain(domain_message)
+        self.db_session.add(orm_message)
+        await self.db_session.flush()
+        return orm_message.to_domain()
+
+    async def get_by_session_id(
+        self, session_id: uuid.UUID, limit: int = 100, offset: int = 0
+    ) -> List[DomainChatMessage]:
+        """Retrieve historical messages for a session, chronologically."""
+        result = await self.db_session.execute(
+            select(ChatMessageORM)
+            .where(ChatMessageORM.session_id == session_id)
+            .order_by(ChatMessageORM.created_at.asc())
+            .offset(offset)
+            .limit(limit)
+        )
+        orm_messages = result.scalars().all()
+        return [orm.to_domain() for orm in orm_messages]
 

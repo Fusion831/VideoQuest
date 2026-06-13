@@ -77,11 +77,14 @@ class SessionService:
 
     async def end_session(self, session_id: uuid.UUID, initiator: Identity) -> DomainSession:
         """Transition session to ENDED status and record SESSION_ENDED event.
-        
+
         This operation is idempotent. If the session has already ended:
         - It does not generate new events or modify the database.
         - It safely returns the current ended session state.
         """
+        from src.services.chat_service import flush_system_message, broadcast_system_message_payload
+        pending_broadcasts: list[tuple[uuid.UUID, dict]] = []
+
         try:
             session = await self.session_repo.get_by_id(session_id)
             if not session:
@@ -89,7 +92,7 @@ class SessionService:
 
             # Perform idempotent state transition
             state_changed = session.end()
-            
+
             if state_changed:
                 saved_session = await self.session_repo.save(session)
 
@@ -100,10 +103,14 @@ class SessionService:
                     metadata={
                         "ended_by": initiator.user_id,
                         "role": initiator.role,
-                        "ended_at": saved_session.ended_at.isoformat() if saved_session.ended_at else None
+                        "ended_at": saved_session.ended_at.isoformat() if saved_session.ended_at else None,
                     },
                 )
                 await self.event_repo.save(event)
+
+                # Bug #1 fix: flush message within transaction, broadcast after commit
+                payload = await flush_system_message(self.db_session, session_id, "Support session ended")
+                pending_broadcasts.append((session_id, payload))
 
                 # Transition all active participants to LEFT
                 participants = await self.participant_repo.get_by_session_id(session_id)
@@ -111,7 +118,7 @@ class SessionService:
                     if p.connection_status != ParticipantConnectionStatus.LEFT:
                         p.leave()
                         await self.participant_repo.save(p)
-                        
+
                         p_left_event = DomainSessionEvent(
                             session_id=session_id,
                             event_type=SessionEventType.PARTICIPANT_LEFT,
@@ -124,10 +131,18 @@ class SessionService:
                             },
                         )
                         await self.event_repo.save(p_left_event)
+                        p_payload = await flush_system_message(
+                            self.db_session, session_id,
+                            f"{p.role.value.title()} {p.user_id} left the session"
+                        )
+                        pending_broadcasts.append((session_id, p_payload))
 
                 await self.db_session.commit()
+                # Bug #1 fix: broadcast AFTER commit
+                for sid, p in pending_broadcasts:
+                    await broadcast_system_message_payload(sid, p)
                 return saved_session
-            
+
             # If state did not change (already ended), simply return the session without mutations
             return session
         except Exception:

@@ -1,10 +1,11 @@
 "use client";
 
-import { use, useEffect, useState } from 'react';
+import { use, useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { apiClient } from '@/lib/api-client';
-import { Session, Participant, SessionEvent } from '@/lib/types';
+import { Session, Participant, SessionEvent, ChatMessage } from '@/lib/types';
+import ChatPanel from '@/components/ChatPanel';
 
 interface PageProps {
   params: Promise<{ sessionId: string }>;
@@ -21,9 +22,12 @@ export default function SessionRoomPage({ params }: PageProps) {
   const [session, setSession] = useState<Session | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [events, setEvents] = useState<SessionEvent[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const wsRef = useRef<WebSocket | null>(null);
 
   // Simulation controls state
   const [simUserId, setSimUserId] = useState(currentUserId || 'user_sim');
@@ -35,14 +39,16 @@ export default function SessionRoomPage({ params }: PageProps) {
   const refreshRoomData = async () => {
     if (!sessionId) return;
     try {
-      const [sessionRes, participantsRes, eventsRes] = await Promise.all([
+      const [sessionRes, participantsRes, eventsRes, chatMessagesRes] = await Promise.all([
         apiClient.getSession(sessionId),
         apiClient.getSessionParticipants(sessionId),
         apiClient.getSessionEvents(sessionId),
+        apiClient.getChatMessages(sessionId),
       ]);
       setSession(sessionRes);
       setParticipants(participantsRes);
       setEvents(eventsRes.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()));
+      setChatMessages(chatMessagesRes);
       setError(null);
     } catch (err: any) {
       setError(err.message || 'Failed to sync room state');
@@ -51,20 +57,48 @@ export default function SessionRoomPage({ params }: PageProps) {
     }
   };
 
+  // UX1 fix: resolve identity from URL params first, fall back to localStorage
+  const storedIdentityKey = `vq_identity_${sessionId}`;
+  const [resolvedUserId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return currentUserId;
+    return currentUserId || localStorage.getItem(`${storedIdentityKey}_userId`);
+  });
+  const [resolvedRole] = useState<'agent' | 'customer' | null>(() => {
+    if (typeof window === 'undefined') return currentRole;
+    const stored = localStorage.getItem(`${storedIdentityKey}_role`) as 'agent' | 'customer' | null;
+    return currentRole || stored;
+  });
+
   // Find current participant ID from the loaded participants list
   const currentParticipant = participants.find(
-    (p) => p.user_id === currentUserId && p.role.toLowerCase() === currentRole?.toLowerCase()
+    (p) => p.user_id === resolvedUserId && p.role.toLowerCase() === resolvedRole?.toLowerCase()
   );
   const currentParticipantId = currentParticipant?.id || null;
+
+  // Persist participant identity to localStorage whenever we successfully identify ourselves
+  useEffect(() => {
+    if (resolvedUserId && resolvedRole && typeof window !== 'undefined') {
+      localStorage.setItem(`${storedIdentityKey}_userId`, resolvedUserId);
+      localStorage.setItem(`${storedIdentityKey}_role`, resolvedRole);
+    }
+  }, [resolvedUserId, resolvedRole, storedIdentityKey]);
 
   // Fetch room data on mount or sessionId change
   useEffect(() => {
     refreshRoomData();
   }, [sessionId]);
 
-  // Establish WebSocket connection for real-time updates
+  // UX2 fix: WS effect only depends on sessionId to avoid reconnect loops.
+  // currentParticipantId is passed via URL param at connect time (captured at open).
+  // Re-runs only when we navigate to a different session.
+
+  // Establish WebSocket connection for real-time updates (tied to sessionId only)
   useEffect(() => {
     if (!sessionId) return;
+
+    // Capture participant ID at the moment the WS connection is opened
+    // so that identity changes mid-render don't cause reconnect loops (UX2 fix)
+    const participantIdAtOpen = currentParticipantId;
 
     let wsHost = 'ws://localhost:8000';
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? window.location.origin : '');
@@ -80,14 +114,15 @@ export default function SessionRoomPage({ params }: PageProps) {
         }
       }
     }
-    
+
     let wsUrl = `${wsHost}/api/v1/sessions/${sessionId}/ws`;
-    if (currentParticipantId) {
-      wsUrl += `?participant_id=${currentParticipantId}`;
+    if (participantIdAtOpen) {
+      wsUrl += `?participant_id=${participantIdAtOpen}`;
     }
 
     console.log(`Connecting to WebSocket: ${wsUrl}`);
     const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
 
     ws.onopen = () => {
       console.log('WebSocket connection established.');
@@ -96,10 +131,19 @@ export default function SessionRoomPage({ params }: PageProps) {
 
     ws.onmessage = (event) => {
       try {
-        const message = JSON.parse(event.data);
-        console.log('Received WebSocket event:', message);
-        // Refresh room data to sync all states with backend
-        refreshRoomData();
+        const data = JSON.parse(event.data);
+        console.log('Received WebSocket event:', data);
+        if (data.event_type === 'MESSAGE_RECEIVED') {
+          setChatMessages((prev) => {
+            if (prev.some((m) => m.id === data.payload.id)) return prev;
+            return [...prev, data.payload];
+          });
+        } else if (data.event_type === 'MESSAGE_SEND_ERROR') {
+          setError(`Failed to send message: ${data.payload.reason}`);
+        } else {
+          // For participant updates or session state changes, sync room details
+          refreshRoomData();
+        }
       } catch (err) {
         console.error('Error handling WebSocket message:', err);
       }
@@ -118,8 +162,9 @@ export default function SessionRoomPage({ params }: PageProps) {
 
     return () => {
       ws.close();
+      wsRef.current = null;
     };
-  }, [sessionId, currentParticipantId]);
+  }, [sessionId]); // UX2 fix: only re-run when sessionId changes, not on every participant refresh
 
   // Set default invite token from fetched session
   useEffect(() => {
@@ -190,6 +235,19 @@ export default function SessionRoomPage({ params }: PageProps) {
     }
   };
 
+  const handleSendMessage = (content: string) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          event: 'SEND_MESSAGE',
+          data: { content },
+        })
+      );
+    } else {
+      setError('Cannot send message: Real-time connection is offline');
+    }
+  };
+
   if (loading && !session) {
     return (
       <div className="min-h-screen bg-zinc-950 text-zinc-400 flex flex-col items-center justify-center gap-3">
@@ -225,11 +283,13 @@ export default function SessionRoomPage({ params }: PageProps) {
               <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${
                 session.status === 'ACTIVE' 
                   ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800/40' 
+                  : session.status === 'ABANDONED'
+                  ? 'bg-amber-950/50 text-amber-400 border border-amber-800/40'
                   : session.status === 'ENDED'
                   ? 'bg-zinc-900 text-zinc-500 border border-zinc-800'
                   : 'bg-indigo-950/50 text-indigo-400 border border-indigo-800/40'
               }`}>
-                {session.status}
+                {session.status === 'ABANDONED' ? '⚠ ABANDONED' : session.status}
               </span>
             )}
             <button
@@ -441,6 +501,15 @@ export default function SessionRoomPage({ params }: PageProps) {
                 </button>
               </div>
             )}
+
+            {/* Chat Room */}
+            <ChatPanel
+              messages={chatMessages}
+              participants={participants}
+              currentParticipantId={currentParticipantId}
+              sessionStatus={session?.status || 'CREATED'}
+              onSendMessage={handleSendMessage}
+            />
 
             {/* Diagnostic Event Logs */}
             <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30">

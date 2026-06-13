@@ -7,7 +7,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.types import TypeDecorator, CHAR
 
 from src.infrastructure.database import Base
-from src.domain.models import DomainSession, SessionStatus, DomainParticipant, ParticipantRole, ParticipantConnectionStatus
+from src.domain.models import DomainSession, SessionStatus, DomainParticipant, ParticipantRole, ParticipantConnectionStatus, DomainChatMessage, ChatMessageType
 from src.domain.events import DomainSessionEvent, SessionEventType
 
 
@@ -172,4 +172,42 @@ Index("idx_session_events_session_id_timestamp", SessionEventORM.session_id, Ses
 # Setup indexes on ParticipantORM
 Index("idx_participants_session_role", ParticipantORM.session_id, ParticipantORM.role, unique=True)
 Index("idx_participants_session_id", ParticipantORM.session_id)
+
+
+class ChatMessageORM(Base):
+    __tablename__ = "chat_messages"
+
+    id = Column(GUID, primary_key=True, default=uuid.uuid4)
+    session_id = Column(GUID, ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
+    sender_participant_id = Column(GUID, ForeignKey("participants.id", ondelete="SET NULL"), nullable=True)
+    message_type = Column(String(50), nullable=False)
+    content = Column(String, nullable=False)
+    metadata_json = Column("metadata", SafeJSON, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+
+    def to_domain(self) -> DomainChatMessage:
+        return DomainChatMessage(
+            id=self.id,
+            session_id=self.session_id,
+            sender_participant_id=self.sender_participant_id,
+            message_type=ChatMessageType(self.message_type),
+            content=self.content,
+            metadata=self.metadata_json,
+            created_at=self.created_at.replace(tzinfo=timezone.utc) if self.created_at else None,
+        )
+
+    @classmethod
+    def from_domain(cls, domain: DomainChatMessage) -> "ChatMessageORM":
+        return cls(
+            id=domain.id,
+            session_id=domain.session_id,
+            sender_participant_id=domain.sender_participant_id,
+            message_type=domain.message_type.value,
+            content=domain.content,
+            metadata_json=domain.metadata,
+            created_at=domain.created_at,
+        )
+
+
+Index("idx_chat_messages_session_created", ChatMessageORM.session_id, ChatMessageORM.created_at)
 

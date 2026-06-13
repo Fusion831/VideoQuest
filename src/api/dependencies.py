@@ -5,9 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.identity import Identity
 from src.infrastructure.database import AsyncSessionLocal
-from src.infrastructure.repositories import SessionRepository, SessionEventRepository, ParticipantRepository
+from src.infrastructure.repositories import SessionRepository, SessionEventRepository, ParticipantRepository, ChatMessageRepository
 from src.services.session_service import SessionService
 from src.services.participant_service import ParticipantService
+from src.services.chat_service import ChatService
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
@@ -40,6 +41,21 @@ def get_participant_service(
         session_repo=session_repo,
         event_repo=event_repo,
         participant_repo=participant_repo,
+        db_session=db_session,
+    )
+
+
+def get_chat_service(
+    db_session: AsyncSession = Depends(get_db_session),
+) -> ChatService:
+    """Dependency injecting ChatService, built with required repositories."""
+    session_repo = SessionRepository(db_session)
+    participant_repo = ParticipantRepository(db_session)
+    message_repo = ChatMessageRepository(db_session)
+    return ChatService(
+        session_repo=session_repo,
+        participant_repo=participant_repo,
+        message_repo=message_repo,
         db_session=db_session,
     )
 

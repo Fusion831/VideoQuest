@@ -4,6 +4,7 @@ import {
   Participant,
   ValidateInviteResponse,
   SessionListResponse,
+  ChatMessage,
 } from './types';
 
 const API_BASE_URL =
@@ -133,5 +134,9 @@ export const apiClient = {
 
   async getSessionParticipants(sessionId: string): Promise<Participant[]> {
     return fetchJson<Participant[]>(`/sessions/${sessionId}/participants`);
+  },
+
+  async getChatMessages(sessionId: string): Promise<ChatMessage[]> {
+    return fetchJson<ChatMessage[]>(`/sessions/${sessionId}/messages`);
   },
 };

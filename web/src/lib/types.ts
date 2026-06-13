@@ -1,7 +1,7 @@
 export interface Session {
   id: string;
   invite_token: string;
-  status: 'CREATED' | 'ACTIVE' | 'ENDED';
+  status: 'CREATED' | 'ACTIVE' | 'ABANDONED' | 'ENDED';
   agent_id: string;
   created_at: string;
   started_at: string | null;
@@ -32,10 +32,20 @@ export interface Participant {
 export interface ValidateInviteResponse {
   valid: boolean;
   session_id: string;
-  status: 'CREATED' | 'ACTIVE' | 'ENDED';
+  status: 'CREATED' | 'ACTIVE' | 'ABANDONED' | 'ENDED';
 }
 
 export interface SessionListResponse {
   sessions: Session[];
   total: number;
+}
+
+export interface ChatMessage {
+  id: string;
+  session_id: string;
+  sender_participant_id: string | null;
+  message_type: 'USER' | 'SYSTEM';
+  content: string;
+  metadata: Record<string, any>;
+  created_at: string;
 }

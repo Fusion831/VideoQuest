@@ -183,3 +183,28 @@ class DomainParticipant:
         return True
 
 
+class ChatMessageType(str, Enum):
+    USER = "USER"
+    SYSTEM = "SYSTEM"
+
+
+class DomainChatMessage:
+    def __init__(
+        self,
+        session_id: uuid.UUID,
+        content: str,
+        sender_participant_id: Optional[uuid.UUID] = None,
+        message_type: Optional[ChatMessageType] = None,
+        metadata: Optional[dict] = None,
+        id: Optional[uuid.UUID] = None,
+        created_at: Optional[datetime] = None,
+    ):
+        self.id = id or uuid.uuid4()
+        self.session_id = session_id
+        self.sender_participant_id = sender_participant_id
+        self.message_type = message_type or ChatMessageType.USER
+        self.content = content
+        self.metadata = metadata or {}
+        self.created_at = created_at or datetime.now(timezone.utc)
+
+

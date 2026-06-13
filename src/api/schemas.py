@@ -64,3 +64,15 @@ class ParticipantResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+class ChatMessageResponse(BaseModel):
+    id: uuid.UUID
+    session_id: uuid.UUID
+    sender_participant_id: Optional[uuid.UUID] = None
+    message_type: str
+    content: str
+    metadata: Dict[str, Any]
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
