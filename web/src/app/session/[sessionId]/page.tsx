@@ -37,6 +37,14 @@ export default function SessionRoomPage({ params }: PageProps) {
 
   // Authenticate identity on mount via /auth/me or stored values
   useEffect(() => {
+    // Determine context-specific token dynamically for this tab context
+    const isCustomer = localStorage.getItem(`${storedIdentityKey}_role`) === 'customer';
+    const activeToken = isCustomer
+      ? localStorage.getItem(`vq_session_token_${sessionId}`)
+      : localStorage.getItem('vq_auth_token');
+    
+    apiClient.setToken(activeToken);
+
     const checkIdentity = async () => {
       try {
         const me = await apiClient.getMe();
@@ -64,6 +72,20 @@ export default function SessionRoomPage({ params }: PageProps) {
     };
     checkIdentity();
   }, [sessionId, router, storedIdentityKey]);
+
+  // Diagnostic logging
+  useEffect(() => {
+    if (identityResolved) {
+      if (resolvedRole === 'agent') {
+        console.log('[DIAGNOSTIC] AGENT_IDENTITY_RESOLVED:', resolvedUserId);
+      }
+      console.log('[DIAGNOSTIC] CURRENT_PARTICIPANT_ID:', currentParticipantId);
+      console.log('[DIAGNOSTIC] CHAT_ENABLED_STATE:', !!currentParticipantId);
+      
+      const agentPart = participants.find((p) => p.role.toUpperCase() === 'AGENT');
+      console.log('[DIAGNOSTIC] AGENT_PARTICIPANT_FOUND:', agentPart ? agentPart.id : 'null');
+    }
+  }, [identityResolved, resolvedRole, resolvedUserId, currentParticipantId, participants]);
 
   // Find current participant ID from the loaded participants list
   const currentParticipant = participants.find(
@@ -121,7 +143,10 @@ export default function SessionRoomPage({ params }: PageProps) {
         resolvedRole,
         resolvedRole === 'customer' ? session.invite_token : undefined
       )
-      .then(() => {
+      .then((newParticipant) => {
+        if (resolvedRole === 'agent') {
+          console.log('[DIAGNOSTIC] AGENT_PARTICIPANT_CREATED:', newParticipant.id);
+        }
         console.log('[AutoJoin] Join success. Refreshing room data...');
         refreshRoomData();
       })
@@ -171,6 +196,7 @@ export default function SessionRoomPage({ params }: PageProps) {
     }
 
     console.log(`Connecting to WebSocket: ${wsUrl}`);
+    console.log('[DIAGNOSTIC] WS_URL:', wsUrl);
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -319,6 +345,8 @@ export default function SessionRoomPage({ params }: PageProps) {
 
   const isAgent = resolvedRole === 'agent';
   const isVideoActive = session?.video_escalation_status === 'ACTIVE';
+  const agentParticipant = participants.find((p) => p.role.toUpperCase() === 'AGENT');
+  const agentName = agentParticipant ? agentParticipant.user_id : 'The agent';
 
   return (
     <div className="min-h-screen bg-zinc-955 text-zinc-100 font-sans selection:bg-zinc-800 selection:text-white flex flex-col">
@@ -382,9 +410,9 @@ export default function SessionRoomPage({ params }: PageProps) {
                 <div className="w-12 h-12 rounded-full bg-zinc-800 text-zinc-200 flex items-center justify-center mx-auto text-xl">
                   📹
                 </div>
-                <h3 className="font-semibold text-lg text-zinc-200">Start Video Call?</h3>
+                <h3 className="font-semibold text-lg text-zinc-200">Video Call Request</h3>
                 <p className="text-xs text-zinc-400 leading-relaxed">
-                  The agent would like to start a video call to assist you better.
+                  {agentName} would like to start a video call.
                 </p>
               </div>
               <div className="flex gap-3">
@@ -507,8 +535,9 @@ export default function SessionRoomPage({ params }: PageProps) {
                   Agent Actions
                 </h3>
                 <div className="flex gap-3">
-                  {session?.video_escalation_status === 'NOT_STARTED' ? (
+                  {!session || session.video_escalation_status === 'NOT_STARTED' ? (
                     <button
+                      disabled={!session || loading}
                       onClick={async () => {
                         try {
                           setError(null);
@@ -518,7 +547,7 @@ export default function SessionRoomPage({ params }: PageProps) {
                           setError(err.message || 'Failed to request video call');
                         }
                       }}
-                      className="flex-1 py-2.5 rounded-xl bg-zinc-100 hover:bg-zinc-200 text-zinc-900 font-medium text-xs transition-all active:scale-[0.98]"
+                      className="flex-1 py-2.5 rounded-xl bg-zinc-100 hover:bg-zinc-200 disabled:opacity-50 disabled:cursor-not-allowed text-zinc-900 font-medium text-xs transition-all active:scale-[0.98]"
                     >
                       📹 Start Video Call
                     </button>

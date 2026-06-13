@@ -10,6 +10,8 @@ import {
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
 
+let customToken: string | null = null;
+
 async function fetchJson<T>(
   endpoint: string,
   options: RequestInit = {}
@@ -31,18 +33,18 @@ async function fetchJson<T>(
 
   // Auto-attach stored Bearer token if available in browser
   if (typeof window !== 'undefined') {
-    // 1. Resolve session-specific token if url matches a session path
-    const sessionMatch = url.match(/\/sessions\/([a-f0-9-]+)/i);
-    let token: string | null = null;
-    
-    if (sessionMatch) {
-      const sessionId = sessionMatch[1];
-      token = localStorage.getItem(`vq_session_token_${sessionId}`);
-    }
-    
-    // 2. Fall back to global authenticated agent token
+    let token = customToken;
+
     if (!token) {
-      token = localStorage.getItem('vq_auth_token');
+      // Fallback: Resolve session-specific token if url matches a session path, otherwise global auth token
+      const sessionMatch = url.match(/\/sessions\/([a-f0-9-]+)/i);
+      if (sessionMatch) {
+        const sessionId = sessionMatch[1];
+        token = localStorage.getItem(`vq_session_token_${sessionId}`);
+      }
+      if (!token) {
+        token = localStorage.getItem('vq_auth_token');
+      }
     }
     
     if (token && !headers.has('Authorization')) {
@@ -67,6 +69,9 @@ async function fetchJson<T>(
 }
 
 export const apiClient = {
+  setToken(token: string | null) {
+    customToken = token;
+  },
   /**
    * Authentication
    */
