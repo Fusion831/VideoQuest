@@ -356,8 +356,8 @@ export default function MediaRoom({
 
   const visualMarker = (
     <div id="media-room-marker" className="bg-zinc-950 border-b border-zinc-800 text-zinc-500 font-bold text-center py-1.5 text-[10px] uppercase tracking-wider select-none flex items-center justify-center gap-1.5">
-      <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
-      LiveKit WebRTC Channel Active
+      <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+      Video Consultation
     </div>
   );
 
@@ -441,92 +441,85 @@ export default function MediaRoom({
               </div>
             )}
 
-            {/* Local Queue Status overlay */}
-            <div className="absolute top-3 left-3 bg-zinc-950/90 border border-zinc-800/80 rounded-lg p-2.5 text-[10px] text-zinc-300 space-y-1.5 backdrop-blur-sm shadow-xl min-w-[120px] z-10 select-none">
-              <div className="font-bold text-indigo-400 uppercase tracking-wider border-b border-zinc-800/50 pb-0.5">You ({currentRoleLabel})</div>
-              <div className="flex items-center justify-between gap-2.5">
-                <span className="text-zinc-500">Camera:</span>
-                <span className={`font-semibold ${isCameraPreConnected ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {isCameraPreConnected ? 'ON' : 'OFF'}
-                </span>
-              </div>
-              <div className="flex items-center justify-between gap-2.5">
-                <span className="text-zinc-500">Microphone:</span>
-                <span className={`font-semibold ${isMicrophonePreConnected ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {isMicrophonePreConnected ? 'ON' : 'MUTED'}
-                </span>
-              </div>
-              <div className="flex items-center justify-between gap-2.5">
-                <span className="text-zinc-500">Status:</span>
-                <span className="text-amber-400 font-semibold uppercase">QUEUED</span>
-              </div>
+            {/* Clean User Tag */}
+            <div className="absolute bottom-3 left-3 bg-zinc-950/80 border border-zinc-800/80 backdrop-blur-md rounded-lg px-3 py-1.5 text-xs text-zinc-200 font-medium z-10 flex items-center gap-2 select-none">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              <span>You ({role === 'agent' ? 'Support Specialist' : 'Customer'})</span>
+              {!isCameraPreConnected && <span className="text-red-400 font-bold text-[9px] uppercase ml-1.5 px-1 bg-red-950/30 rounded">Camera Off</span>}
+              {!isMicrophonePreConnected && <span className="text-red-400 font-bold text-[9px] uppercase ml-1.5 px-1 bg-red-950/30 rounded">Muted</span>}
             </div>
           </div>
 
           {/* Remote Participant Queue Tile */}
           <div className="relative rounded-xl overflow-hidden bg-zinc-900 border border-zinc-800 flex items-center justify-center">
-            <div className="flex flex-col items-center justify-center text-zinc-500 text-center px-4 bg-zinc-950/20 w-full h-full select-none">
+            <div className="flex flex-col items-center justify-center text-zinc-550 text-center px-4 bg-zinc-950/10 w-full h-full select-none">
               <svg className="w-8 h-8 mb-2 animate-pulse text-zinc-650" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636m3.536 9.192l-3.536 3.536M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-5 0a4 4 0 11-8 0 4 4 0 018 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636m3.536 9.192l-3.536 3.536" />
               </svg>
               <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-400 block mb-1">
-                Waiting for {expectedRemoteRole} to join...
+                {role === 'agent' ? 'Waiting for Customer' : 'Waiting for Support Agent'}
               </span>
-              <span className="text-[9px] text-zinc-600 leading-relaxed max-w-[210px]">
-                Media is in queue setup. Grant permissions and turn on your camera. Streaming begins automatically.
+              <span className="text-[9.5px] text-zinc-650 leading-relaxed max-w-[210px]">
+                {role === 'agent' 
+                  ? 'The invite link has been shared. The consultation will begin once the customer joins.'
+                  : 'Your request has been received. An agent will join shortly.'}
               </span>
             </div>
 
-            {/* Remote Status Overlay */}
-            <div className="absolute top-3 left-3 bg-zinc-950/90 border border-zinc-800/80 rounded-lg p-2.5 text-[10px] text-zinc-300 space-y-1.5 backdrop-blur-sm shadow-xl min-w-[120px] z-10 select-none">
-              <div className="font-bold text-violet-400 uppercase tracking-wider border-b border-zinc-800/50 pb-0.5">
-                {expectedRemoteRole}
-              </div>
-              <div className="flex items-center justify-between gap-2.5">
-                <span className="text-zinc-500">Camera:</span>
-                <span className="text-zinc-600 font-semibold">PENDING</span>
-              </div>
-              <div className="flex items-center justify-between gap-2.5">
-                <span className="text-zinc-500">Microphone:</span>
-                <span className="text-zinc-600 font-semibold">PENDING</span>
-              </div>
-              <div className="flex items-center justify-between gap-2.5">
-                <span className="text-zinc-500">Status:</span>
-                <span className="text-zinc-600 font-semibold uppercase">OFFLINE</span>
-              </div>
+            {/* Clean Remote User Tag */}
+            <div className="absolute bottom-3 left-3 bg-zinc-950/80 border border-zinc-800/80 backdrop-blur-md rounded-lg px-3 py-1.5 text-xs text-zinc-400 font-medium z-10 flex items-center gap-2 select-none">
+              <span className="w-1.5 h-1.5 rounded-full bg-zinc-750" />
+              <span>{expectedRemoteRole === 'Support Agent' ? 'Support Specialist' : 'Customer'}</span>
             </div>
           </div>
         </div>
 
         {/* Queue Control Panel */}
-        <div className="h-14 bg-zinc-900 border-t border-zinc-850 px-4 flex items-center justify-between min-h-[56px] shrink-0 select-none">
+        <div className="h-16 bg-zinc-900 border-t border-zinc-800/80 px-6 flex items-center justify-between shrink-0 select-none">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-500">
-              🟡 Waiting in Queue (Session status: {sessionStatus})
+            <span className="text-[10.5px] font-bold uppercase tracking-wider text-zinc-450">
+              Preparing Consultation
             </span>
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Microphone Toggle */}
             <button
               onClick={() => setIsMicrophonePreConnected(!isMicrophonePreConnected)}
-              className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all active:scale-95 ${
-                isMicrophonePreConnected
-                  ? 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-750'
-                  : 'bg-red-950/40 border-red-900/30 text-red-400 hover:bg-red-900/20'
+              className={`px-4 py-2 rounded-xl border text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer ${
+                !isMicrophonePreConnected
+                  ? 'bg-red-950/40 border-red-900/30 text-red-400 hover:bg-red-900/20'
+                  : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-750'
               }`}
             >
-              {isMicrophonePreConnected ? '🟢 Mic On' : '🔴 Mic Muted'}
+              <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                {isMicrophonePreConnected ? (
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                ) : (
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                )}
+              </svg>
+              <span>Microphone</span>
             </button>
+            
+            {/* Camera Toggle */}
             <button
               onClick={() => setIsCameraPreConnected(!isCameraPreConnected)}
-              className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all active:scale-95 ${
-                isCameraPreConnected
-                  ? 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-750'
-                  : 'bg-red-950/40 border-red-900/30 text-red-400 hover:bg-red-900/20'
+              className={`px-4 py-2 rounded-xl border text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer ${
+                !isCameraPreConnected
+                  ? 'bg-red-950/40 border-red-900/30 text-red-450 hover:bg-red-900/20'
+                  : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-750'
               }`}
             >
-              {isCameraPreConnected ? '🟢 Camera On' : '🔴 Camera Off'}
+              <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                {isCameraPreConnected ? (
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                ) : (
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                )}
+              </svg>
+              <span>Camera</span>
             </button>
           </div>
         </div>
@@ -615,7 +608,7 @@ export default function MediaRoom({
 function getConnectionLabel(state: string) {
   switch (state.toUpperCase()) {
     case 'CONNECTED':
-      return { label: 'Video Consultation Connected', color: 'bg-emerald-500', emoji: '🟢' };
+      return { label: 'Connected', color: 'bg-emerald-500', emoji: '🟢' };
     case 'CONNECTING':
       return { label: 'Connecting', color: 'bg-amber-500 animate-pulse', emoji: '🟡' };
     case 'RECONNECTING':
@@ -1008,14 +1001,14 @@ function MediaGrid({
               )}
               
               {!remoteParticipant.isCameraEnabled ? (
-                <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/40 w-full h-full select-none z-0">
+                <div className="flex flex-col items-center justify-center text-zinc-550 bg-zinc-950/40 w-full h-full select-none z-0">
                   <svg className="w-10 h-10 mb-2 text-zinc-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14" />
                   </svg>
                   <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-650">Camera Off</span>
                 </div>
               ) : !remoteVideoTrackRef && (
-                <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/40 w-full h-full select-none gap-2 z-0">
+                <div className="flex flex-col items-center justify-center text-zinc-550 bg-zinc-950/40 w-full h-full select-none gap-2 z-0">
                   <svg className="w-6 h-6 animate-spin text-purple-500" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -1035,14 +1028,16 @@ function MediaGrid({
           ) : (
             /* Remote Participant Waiting State */
             <div className="flex flex-col items-center justify-center text-zinc-550 text-center px-4 bg-zinc-950/10 w-full h-full select-none">
-              <svg className="w-8 h-8 mb-2 animate-pulse text-purple-505" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="w-8 h-8 mb-2 animate-pulse text-zinc-650" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536" />
               </svg>
               <span className="text-[10px] uppercase font-bold tracking-wider text-zinc-400 block mb-1">
-                Waiting for {expectedRemoteRole === 'Support Agent' ? 'Support Specialist' : 'Customer'} to join...
+                {role === 'agent' ? 'Waiting for Customer' : 'Waiting for Support Agent'}
               </span>
-              <span className="text-[9.5px] text-zinc-600 max-w-[210px] leading-relaxed">
-                The video connection will establish automatically once they open the invite link.
+              <span className="text-[9.5px] text-zinc-650 max-w-[210px] leading-relaxed">
+                {role === 'agent' 
+                  ? 'The invite link has been shared. The consultation will begin once the customer joins.'
+                  : 'Your request has been received. An agent will join shortly.'}
               </span>
             </div>
           )}
@@ -1052,9 +1047,16 @@ function MediaGrid({
       {/* Control Panel / Connection Status Bar */}
       <div className="h-16 bg-zinc-900/95 border-t border-zinc-800/80 px-6 flex items-center justify-between shrink-0 select-none">
         <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${conn.color}`} />
-          <span className="text-[10.5px] font-bold uppercase tracking-wider text-zinc-400">
-            {conn.label}
+          <span className={`w-2 h-2 rounded-full ${
+            connectionStatus === 'CONNECTED'
+              ? remoteParticipant ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'
+              : (connectionStatus === 'CONNECTING' || connectionStatus === 'RECONNECTING') ? 'bg-amber-500 animate-pulse' : 'bg-red-500'
+          }`} />
+          <span className="text-[10.5px] font-bold uppercase tracking-wider text-zinc-450">
+            {connectionStatus === 'CONNECTED'
+              ? remoteParticipant ? 'Video Consultation Active' : role === 'agent' ? 'Waiting for Customer' : 'Waiting for Support Agent'
+              : (connectionStatus === 'CONNECTING' || connectionStatus === 'RECONNECTING') ? 'Reconnecting...' : 'Video Consultation Offline'
+            }
           </span>
         </div>
 
@@ -1069,7 +1071,14 @@ function MediaGrid({
                 : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-750'
             }`}
           >
-            {localMicActive ? 'Mute Microphone' : 'Unmute Microphone'}
+            <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              {localMicActive ? (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+              )}
+            </svg>
+            <span>Microphone</span>
           </button>
           
           {/* Camera Toggle */}
@@ -1078,11 +1087,18 @@ function MediaGrid({
             disabled={cameraSyncing}
             className={`px-4 py-2 rounded-xl border text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer ${
               !localCameraActive
-                ? 'bg-red-950/40 border-red-900/30 text-red-400 hover:bg-red-900/20'
+                ? 'bg-red-950/40 border-red-900/30 text-red-450 hover:bg-red-900/20'
                 : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-750'
             }`}
           >
-            {localCameraActive ? 'Stop Camera' : 'Start Camera'}
+            <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              {localCameraActive ? (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+              )}
+            </svg>
+            <span>Camera</span>
           </button>
 
           {/* Share Support Link (Agent-Only) */}

@@ -12,6 +12,76 @@ interface PageProps {
   params: Promise<{ sessionId: string }>;
 }
 
+interface SupportProgressTrackerProps {
+  currentStage: number; // 1, 2, 3, or 4
+}
+
+function SupportProgressTracker({ currentStage }: SupportProgressTrackerProps) {
+  const stages = [
+    { label: 'Support Request', desc: 'Received' },
+    { label: 'Agent Joined', desc: 'Assigned' },
+    { label: 'Consultation Active', desc: 'In Progress' },
+    { label: 'Resolved', desc: 'Completed' }
+  ];
+
+  return (
+    <div className="w-full bg-zinc-900/40 border border-zinc-800/80 rounded-2xl p-5 mb-8 shadow-md">
+      <div className="grid grid-cols-4 gap-4 relative">
+        {stages.map((stage, idx) => {
+          const stageNum = idx + 1;
+          const isCompleted = stageNum < currentStage;
+          const isActive = stageNum === currentStage;
+
+          let iconBg = 'bg-zinc-950 border-zinc-800 text-zinc-650';
+          let textColor = 'text-zinc-500';
+
+          if (isCompleted) {
+            iconBg = 'bg-purple-950/60 border-purple-500/50 text-purple-400';
+            textColor = 'text-purple-300';
+          } else if (isActive) {
+            iconBg = 'bg-purple-900 border-purple-500 text-white shadow-[0_0_12px_rgba(168,85,247,0.4)]';
+            textColor = 'text-zinc-200 font-semibold';
+          }
+
+          return (
+            <div key={idx} className="relative flex flex-col items-center text-center">
+              {/* Connector Line */}
+              {idx < 3 && (
+                <div 
+                  className={`absolute top-4 left-[50%] right-[-50%] h-[2px] -translate-y-[50%] z-0 ${
+                    stageNum < currentStage ? 'bg-purple-500/30' : 'bg-zinc-850'
+                  }`}
+                />
+              )}
+              
+              {/* Step Circle */}
+              <div className={`relative z-10 w-8 h-8 rounded-full border flex items-center justify-center text-xs font-mono transition-all duration-300 ${iconBg}`}>
+                {isCompleted ? (
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : (
+                  <span>0{stageNum}</span>
+                )}
+              </div>
+              
+              {/* Step Text */}
+              <div className="mt-2.5 space-y-0.5">
+                <span className={`block text-[11px] leading-tight transition-colors duration-300 ${textColor}`}>
+                  {stage.label}
+                </span>
+                <span className="block text-[9px] uppercase tracking-wider text-zinc-600 font-medium">
+                  {stage.desc}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function SessionRoomPage({ params }: PageProps) {
   const { sessionId } = use(params);
   const searchParams = useSearchParams();
@@ -31,6 +101,7 @@ export default function SessionRoomPage({ params }: PageProps) {
   const [autoJoinAttempted, setAutoJoinAttempted] = useState(false);
 
   const [isVideoCallOpen, setIsVideoCallOpen] = useState(true);
+  const [chatCollapsed, setChatCollapsed] = useState(false);
 
   // End Session Resolution Modal States
   const [showEndSessionModal, setShowEndSessionModal] = useState(false);
@@ -372,6 +443,139 @@ export default function SessionRoomPage({ params }: PageProps) {
   const hasAgentJoined = agentParticipant && agentParticipant.connection_status === 'CONNECTED';
   const agentName = agentParticipant ? agentParticipant.user_id : 'Support Agent';
 
+  const customerName = typeof window !== 'undefined'
+    ? (localStorage.getItem(`vq_consultation_${sessionId}_customerName`) || participants.find(p => p.role.toLowerCase() === 'customer')?.user_id || 'Customer')
+    : 'Customer';
+
+  const issueCategory = typeof window !== 'undefined'
+    ? (localStorage.getItem(`vq_consultation_${sessionId}_issueCategory`) || localStorage.getItem(`vq_issue_${sessionId}`) || 'Support Consultation')
+    : 'Support Consultation';
+
+  const optionalNotes = typeof window !== 'undefined'
+    ? (localStorage.getItem(`vq_consultation_${sessionId}_notes`) || '')
+    : '';
+
+  const getWaitingTimeLabel = () => {
+    if (!session) return '0 minutes';
+    const start = new Date(session.created_at).getTime();
+    const end = session.started_at ? new Date(session.started_at).getTime() : Date.now();
+    const diffMins = Math.max(0, Math.floor((end - start) / 60000));
+    return `${diffMins} minutes`;
+  };
+
+  const getTimelineItems = () => {
+    const items: { id: string; time: string; timestamp: Date; label: string; type: string }[] = [];
+
+    const formatTime = (date: Date) => {
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    };
+
+    if (events && events.length > 0) {
+      events.forEach((evt) => {
+        let label = '';
+        let type = 'info';
+        const role = evt.metadata?.role || '';
+        const friendlyName = role.toLowerCase() === 'agent' ? 'Support Specialist' : (customerName || 'Customer');
+
+        switch (evt.event_type) {
+          case 'SESSION_CREATED':
+            label = 'Support request received';
+            type = 'info';
+            break;
+          case 'SESSION_STARTED':
+            label = 'Support session started';
+            type = 'success';
+            break;
+          case 'SESSION_ENDED':
+            label = 'Support session ended';
+            type = 'warning';
+            break;
+          case 'PARTICIPANT_JOINED':
+            label = `${friendlyName} joined the conversation`;
+            type = 'info';
+            break;
+          case 'PARTICIPANT_LEFT':
+            label = `${friendlyName} left the conversation`;
+            type = 'warning';
+            break;
+          case 'PARTICIPANT_DISCONNECTED':
+            label = `${friendlyName} disconnected`;
+            type = 'error';
+            break;
+          case 'PARTICIPANT_RECONNECTED':
+            label = `${friendlyName} reconnected`;
+            type = 'success';
+            break;
+          case 'ISSUE_RESOLVED':
+            label = 'Issue resolved';
+            type = 'success';
+            break;
+          case 'FOLLOW_UP_REQUESTED':
+            label = 'Follow-up requested';
+            type = 'warning';
+            break;
+          default:
+            return;
+        }
+
+        if (label) {
+          items.push({
+            id: evt.id,
+            time: formatTime(new Date(evt.timestamp)),
+            timestamp: new Date(evt.timestamp),
+            label,
+            type,
+          });
+        }
+      });
+    } else {
+      chatMessages
+        .filter((msg) => msg.message_type === 'SYSTEM')
+        .forEach((msg) => {
+          let label = msg.content;
+          let type = 'info';
+
+          if (label.includes('joined the session')) {
+            label = label.replace('joined the session', 'joined the conversation');
+            label = label.replace('Agent', 'Support Specialist');
+            type = 'info';
+          } else if (label.includes('left the session')) {
+            label = label.replace('left the session', 'left the conversation');
+            label = label.replace('Agent', 'Support Specialist');
+            type = 'warning';
+          } else if (label.includes('reconnected')) {
+            label = label.replace('Agent', 'Support Specialist');
+            type = 'success';
+          } else if (label.includes('Support session started')) {
+            label = 'Support session started';
+            type = 'success';
+          } else if (label.includes('Support session resumed')) {
+            label = 'Support session resumed';
+            type = 'success';
+          } else if (label.includes('Support session ended')) {
+            label = 'Support session ended';
+            type = 'warning';
+          } else if (label.includes('Issue resolved')) {
+            label = 'Issue resolved';
+            type = 'success';
+          } else if (label.includes('Follow-up requested')) {
+            label = 'Follow-up requested';
+            type = 'warning';
+          }
+
+          items.push({
+            id: msg.id,
+            time: formatTime(new Date(msg.created_at)),
+            timestamp: new Date(msg.created_at),
+            label,
+            type,
+          });
+        });
+    }
+
+    return items.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  };
+
   // 1. CUSTOMER WAITING SCREEN (No agent present in the conversation yet)
   if (!isAgent && !hasAgentJoined) {
     const issueSummary = typeof window !== 'undefined' ? localStorage.getItem(`vq_issue_${sessionId}`) : '';
@@ -434,7 +638,13 @@ export default function SessionRoomPage({ params }: PageProps) {
     );
   }
 
-  // 2. CUSTOMER / AGENT ACTIVE SESSIONS
+  const getActiveStep = () => {
+    if (session?.status === 'ENDED') return 4;
+    if (session?.status === 'ACTIVE' && session?.started_at) return 3;
+    if (hasAgentJoined || session?.started_at) return 2;
+    return 1;
+  };
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-purple-600 selection:text-white">
       {/* Header */}
@@ -453,15 +663,15 @@ export default function SessionRoomPage({ params }: PageProps) {
                 </Link>
                 <div className="flex flex-col">
                   <span className="font-semibold text-sm text-zinc-200">Support Session Console</span>
-                  <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Staff Room</span>
+                  <span className="text-[10px] text-zinc-550 uppercase tracking-wider">Staff Room</span>
                 </div>
               </>
             ) : (
               <div className="flex flex-col">
                 <h1 className="font-semibold text-base text-zinc-100 tracking-tight">
-                  Support with {agentName}
+                  Support with {isAgent ? (session?.agent_id || 'Daksh') : (agentParticipant ? 'Daksh' : 'Support Agent')}
                 </h1>
-                <p className="text-xs text-zinc-400 font-normal">
+                <p className="text-xs text-zinc-550 font-normal">
                   Support session in progress
                 </p>
               </div>
@@ -502,12 +712,24 @@ export default function SessionRoomPage({ params }: PageProps) {
             )}
 
             {isAgent && (
-              <button
-                onClick={refreshRoomData}
-                className="px-3.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-850 text-zinc-400 hover:text-zinc-200 text-xs font-medium transition-all cursor-pointer"
-              >
-                Sync Status
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setChatCollapsed(!chatCollapsed)}
+                  className={`px-3.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-2 transition-all active:scale-95 cursor-pointer ${
+                    chatCollapsed
+                      ? 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:bg-zinc-850'
+                      : 'bg-purple-900/20 border-purple-800/40 text-purple-400 hover:bg-purple-900/30'
+                  }`}
+                >
+                  {chatCollapsed ? 'Show Chat' : 'Hide Chat'}
+                </button>
+                <button
+                  onClick={refreshRoomData}
+                  className="px-3.5 py-1.5 rounded-xl bg-zinc-950 border border-zinc-800 hover:bg-zinc-850 text-zinc-400 hover:text-zinc-200 text-xs font-semibold transition-all cursor-pointer"
+                >
+                  Refresh Connection
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -524,372 +746,308 @@ export default function SessionRoomPage({ params }: PageProps) {
           </div>
         )}
 
-        {isAgent ? (
-          /* AGENT VIEW: Two columns layout with event log at the bottom */
-          <div className="space-y-8">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-              {/* Left Column (8 cols): Media Room + Participants Roster */}
-              <div className="lg:col-span-8 space-y-6">
-                {resolvedUserId && resolvedRole ? (
-                  <MediaRoom
-                    sessionId={sessionId}
-                    userId={resolvedUserId}
-                    role={resolvedRole}
-                    sessionStatus={session?.status || 'CREATED'}
-                    onShareSupportLink={handleCopyLink}
-                    onEndSupportSession={() => setShowEndSessionModal(true)}
-                  />
-                ) : (
-                  <div className="p-6 rounded-2xl bg-zinc-900/50 border border-zinc-800/80 text-center text-zinc-500 text-xs">
-                    Initializing secure stream...
+        {/* Support Step Journey Tracker */}
+        <SupportProgressTracker currentStage={getActiveStep()} />
+
+        {/* 2-Column Grid Layout */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+          
+          {/* Left Column (Video Consultation + Metadata Cards) - occupies 8 columns (70% width) */}
+          <div className="lg:col-span-8 space-y-6 w-full">
+            {/* Video Consultation Area */}
+            {resolvedUserId && resolvedRole && (session?.status !== 'ENDED' || isAgent) ? (
+              <MediaRoom
+                sessionId={sessionId}
+                userId={resolvedUserId}
+                role={resolvedRole}
+                sessionStatus={session?.status || 'CREATED'}
+              />
+            ) : session?.status === 'ENDED' ? (
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-900 overflow-hidden shadow-xl shadow-black/40 flex flex-col p-8 items-center justify-center text-center min-h-[380px]">
+                <svg className="w-12 h-12 text-zinc-650 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span className="text-sm font-semibold text-zinc-300">Support Session Concluded</span>
+                <p className="text-xs text-zinc-550 max-w-[280px] mt-1.5 leading-relaxed">
+                  This consultation has concluded. The support agent has resolved the issue.
+                </p>
+              </div>
+            ) : (
+              <div className="p-6 rounded-2xl bg-zinc-900/50 border border-zinc-800/80 text-center text-zinc-550 text-xs">
+                Initializing video consultation stream...
+              </div>
+            )}
+
+            {/* Sub-grid below video (Roster + Details) */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              
+              {/* Session Information Card (Both Customer & Agent) */}
+              <div className="p-6 rounded-2xl bg-zinc-900/40 border border-zinc-800/80 shadow-xl space-y-4">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400 flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+                  Support Session Details
+                </h3>
+                
+                <div className="space-y-3 text-xs">
+                  <div className="flex justify-between py-1 border-b border-zinc-850">
+                    <span className="text-zinc-500">Customer</span>
+                    <span className="text-zinc-200 font-semibold">{customerName}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-zinc-850">
+                    <span className="text-zinc-500">Agent</span>
+                    <span className="text-zinc-200 font-semibold">{isAgent ? (session?.agent_id || 'Daksh') : (agentParticipant ? 'Daksh' : 'Support Agent')}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-zinc-850">
+                    <span className="text-zinc-500">Category</span>
+                    <span className="text-zinc-350">{issueCategory}</span>
+                  </div>
+                  <div className="flex justify-between py-1 border-b border-zinc-850">
+                    <span className="text-zinc-500">Status</span>
+                    <span className={`font-semibold ${session?.status === 'ACTIVE' ? 'text-purple-400' : session?.status === 'ENDED' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                      {session?.status === 'ACTIVE' ? 'In Progress' : session?.status === 'ENDED' ? 'Completed' : 'Waiting in Queue'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between py-1">
+                    <span className="text-zinc-500">Started At</span>
+                    <span className="text-zinc-400">{session?.created_at ? new Date(session.created_at).toLocaleTimeString() : '--'}</span>
+                  </div>
+                </div>
+
+                {optionalNotes && (
+                  <div className="p-3 rounded-lg bg-zinc-950/40 border border-zinc-855 text-xs text-zinc-500 space-y-1">
+                    <span className="block text-[9px] uppercase tracking-wider font-bold text-zinc-650">Customer Notes</span>
+                    <p className="italic font-normal">"{optionalNotes}"</p>
                   </div>
                 )}
+                
+                {/* Agent Call Controls (End Session button) */}
+                {isAgent && session?.status !== 'ENDED' && (
+                  <div className="pt-2 border-t border-zinc-850 flex gap-2">
+                    <button
+                      onClick={() => setShowEndSessionModal(true)}
+                      className="w-full py-2.5 px-4 rounded-xl bg-red-950/60 hover:bg-red-900/30 text-red-400 border border-red-900/40 text-xs font-semibold transition-all cursor-pointer"
+                    >
+                      End Support Session
+                    </button>
+                  </div>
+                )}
+              </div>
 
-                {/* Participant Roster */}
-                <div className="p-6 rounded-2xl bg-zinc-900/40 border border-zinc-800/80 shadow-xl">
-                  <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-4 flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
-                    Session Members
+              {/* Roster Registry card (Agent Only) */}
+              {isAgent && (
+                <div className="p-6 rounded-2xl bg-zinc-900/40 border border-zinc-800/80 shadow-xl space-y-4">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400 flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+                    Roster Registry
                   </h3>
                   
                   {participants.length === 0 ? (
-                    <div className="py-8 text-center text-xs text-zinc-550 border border-dashed border-zinc-800 rounded-xl">
-                      No members registered.
+                    <div className="text-zinc-655 text-xs py-4 text-center">
+                      No participants registered.
                     </div>
                   ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-3">
                       {participants.map((p) => {
-                        const isMe = p.user_id === resolvedUserId && p.role.toLowerCase() === resolvedRole?.toLowerCase();
-                        const isAgentRole = p.role.toLowerCase() === 'agent';
-                        
-                        let displayRole = 'Customer';
-                        let badgeColor = 'bg-zinc-800/80 text-zinc-300 border-zinc-700/60';
-                        if (isAgentRole) {
-                          displayRole = 'Support Specialist';
-                          badgeColor = 'bg-purple-950/40 text-purple-400 border-purple-800/40';
-                        }
-                        
-                        let statusLabel = p.connection_status.toLowerCase();
-                        let statusColor = 'bg-zinc-800 text-zinc-500';
-                        let dotColor = 'bg-zinc-650';
-                        if (p.connection_status === 'CONNECTED') {
-                          statusColor = 'bg-emerald-950/40 text-emerald-400 border-emerald-800/40';
-                          dotColor = 'bg-emerald-500';
-                        } else if (p.connection_status === 'DISCONNECTED') {
-                          statusColor = 'bg-amber-950/40 text-amber-400 border-amber-800/40 animate-pulse';
-                          dotColor = 'bg-amber-500';
-                        }
+                        const isMe = p.id === currentParticipantId;
+                        const displayRole = p.role.toUpperCase() === 'AGENT' ? 'Support Specialist' : 'Customer';
+                        const badgeColor = p.role.toUpperCase() === 'AGENT'
+                          ? 'bg-purple-950/40 text-purple-400 border-purple-900/30'
+                          : 'bg-zinc-900 text-zinc-450 border-zinc-800';
+
+                        const statusLabel = p.connection_status === 'CONNECTED' ? 'Online' : 'Offline';
+                        const statusColor = p.connection_status === 'CONNECTED'
+                          ? 'bg-emerald-950/40 text-emerald-400 border-emerald-900/30'
+                          : 'bg-zinc-955 text-zinc-550 border-zinc-900';
+                        const dotColor = p.connection_status === 'CONNECTED' ? 'bg-emerald-500' : 'bg-zinc-750';
 
                         return (
-                          <div
-                            key={p.id}
-                            className="p-4 rounded-xl bg-zinc-950/60 border border-zinc-850 flex flex-col justify-between gap-3"
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="flex items-center gap-3">
-                                {/* Sleek Avatar */}
-                                <div className="w-9 h-9 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0">
-                                  {isAgentRole ? (
-                                    <svg className="w-4.5 h-4.5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                                    </svg>
-                                  ) : (
-                                    <svg className="w-4.5 h-4.5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                                    </svg>
+                          <div key={p.id} className="p-3 rounded-xl bg-zinc-950/30 border border-zinc-850 flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              {/* Avatar */}
+                              <div className="w-7 h-7 rounded-lg bg-zinc-900 border border-zinc-850 flex items-center justify-center text-zinc-550 shrink-0">
+                                {p.role.toUpperCase() === 'AGENT' ? (
+                                  <svg className="w-4 h-4 text-purple-455" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                                  </svg>
+                                ) : (
+                                  <svg className="w-4 h-4 text-zinc-455" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                                  </svg>
+                                )}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="font-semibold text-xs text-zinc-200 truncate flex items-center gap-1.5">
+                                  <span>{p.role.toUpperCase() === 'AGENT' ? 'Support Specialist' : customerName}</span>
+                                  {isMe && (
+                                    <span className="text-[9px] bg-zinc-900 text-zinc-550 px-1 py-0.5 rounded font-normal">You</span>
                                   )}
                                 </div>
-                                <div className="min-w-0">
-                                  <div className="font-semibold text-sm text-zinc-200 truncate flex items-center gap-1.5">
-                                    <span>{p.user_id}</span>
-                                    {isMe && (
-                                      <span className="text-[9px] bg-zinc-900 text-zinc-550 px-1 py-0.5 rounded font-normal">You</span>
-                                    )}
-                                  </div>
-                                  <span className={`inline-block text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.2 rounded border ${badgeColor} mt-1`}>
-                                    {displayRole}
-                                  </span>
-                                </div>
+                                <span className={`inline-block text-[8.5px] font-bold uppercase tracking-wider px-1.5 py-0.2 rounded border ${badgeColor} mt-1`}>
+                                  {displayRole}
+                                </span>
                               </div>
-
-                              <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border flex items-center gap-1.5 ${statusColor}`}>
-                                <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
-                                {statusLabel}
-                              </span>
                             </div>
 
-                            {session?.status !== 'ENDED' && (
-                              <details className="group/memb-dev border-t border-zinc-900/40 pt-2">
-                                <summary className="cursor-pointer select-none text-[8px] uppercase font-bold tracking-wider text-zinc-650 hover:text-zinc-500 transition-colors flex items-center gap-1">
-                                  <svg className="w-2.5 h-2.5 group-open/memb-dev:rotate-90 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-                                  </svg>
-                                  Developer Actions
-                                </summary>
-                                <div className="mt-2 flex gap-1.5">
-                                  {p.connection_status === 'CONNECTED' && (
-                                    <>
-                                      <button
-                                        onClick={() => handleDisconnect(p.id)}
-                                        className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-850 text-[10px] font-semibold text-amber-400 transition-all cursor-pointer"
-                                      >
-                                        Disconnect
-                                      </button>
-                                      <button
-                                        onClick={() => handleLeave(p.id)}
-                                        className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-850 text-[10px] font-semibold text-red-400 transition-all cursor-pointer"
-                                      >
-                                        Leave
-                                      </button>
-                                    </>
-                                  )}
-                                  {p.connection_status === 'DISCONNECTED' && (
-                                    <>
-                                      <button
-                                        onClick={() => handleReconnect(p.id)}
-                                        className="flex-1 py-1 rounded bg-purple-950/40 hover:bg-purple-900/20 text-[10px] font-semibold text-purple-400 border border-purple-900/30 transition-all cursor-pointer"
-                                      >
-                                        Reconnect
-                                      </button>
-                                      <button
-                                        onClick={() => handleLeave(p.id)}
-                                        className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-850 text-[10px] font-semibold text-red-400 transition-all cursor-pointer"
-                                      >
-                                        Leave
-                                      </button>
-                                    </>
-                                  )}
-                                </div>
-                              </details>
-                            )}
+                            <span className={`text-[9.5px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border flex items-center gap-1.5 ${statusColor}`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
+                              {statusLabel}
+                            </span>
                           </div>
                         );
                       })}
                     </div>
                   )}
                 </div>
-              </div>
+              )}
 
-              {/* Right Column (4 cols): Chat + Session Details */}
-              <div className="lg:col-span-4 space-y-6">
-                <ChatPanel
-                  messages={chatMessages}
-                  participants={participants}
-                  currentParticipantId={currentParticipantId}
-                  sessionStatus={session?.status || 'CREATED'}
-                  onSendMessage={handleSendMessage}
-                />
+            </div>
 
-                {/* Session Metadata */}
-                {session && (
-                  <div className="p-6 rounded-2xl bg-zinc-900/40 border border-zinc-800/80 shadow-xl">
-                    <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-4 flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
-                      Consultation Details
-                    </h3>
-                    
-                    {/* Read customer / consultation details from localStorage if present on agent browser */}
-                    {(() => {
-                      const custName = typeof window !== 'undefined' ? (localStorage.getItem(`vq_consultation_${sessionId}_customerName`) || participants.find(p => p.role.toLowerCase() === 'customer')?.user_id || 'Customer') : 'Customer';
-                      const issueCategory = typeof window !== 'undefined' ? (localStorage.getItem(`vq_consultation_${sessionId}_issueCategory`) || 'Support Consultation') : 'Support Consultation';
-                      const internalNotes = typeof window !== 'undefined' ? (localStorage.getItem(`vq_consultation_${sessionId}_notes`) || '') : '';
-                      return (
-                        <div className="space-y-4">
-                          <div className="space-y-3 text-xs">
-                            <div className="flex justify-between py-1 border-b border-zinc-850">
-                              <span className="text-zinc-500">Customer Name</span>
-                              <span className="text-zinc-200 font-semibold">{custName}</span>
-                            </div>
-                            <div className="flex justify-between py-1 border-b border-zinc-850">
-                              <span className="text-zinc-500">Issue Category</span>
-                              <span className="text-zinc-350">{issueCategory}</span>
-                            </div>
-                            <div className="flex justify-between py-1 border-b border-zinc-850">
-                              <span className="text-zinc-500">Assigned Agent</span>
-                              <span className="text-zinc-300">{session.agent_id}</span>
-                            </div>
-                            <div className="flex justify-between py-1">
-                              <span className="text-zinc-500">Started At</span>
-                              <span className="text-zinc-400">{new Date(session.created_at).toLocaleTimeString()}</span>
-                            </div>
+            {/* Developer Tools (Collapsible, Agent Only) */}
+            {isAgent && (
+              <div className="p-4 rounded-xl bg-zinc-900/20 border border-zinc-800/40">
+                <details className="group/dev-tools">
+                  <summary className="cursor-pointer select-none text-xs font-semibold uppercase tracking-wider text-zinc-505 hover:text-zinc-300 transition-colors flex items-center gap-1.5">
+                    <svg className="w-3.5 h-3.5 group-open/dev-tools:rotate-90 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                    </svg>
+                    Developer Tools
+                  </summary>
+                  
+                  <div className="mt-4 space-y-4 pt-4 border-t border-zinc-850">
+                    {/* Technical Metadata */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                      <div className="p-3 bg-zinc-950/40 rounded-lg border border-zinc-850 space-y-1">
+                        <span className="text-[9px] uppercase tracking-wider font-bold text-zinc-555 block">Session ID</span>
+                        <code className="text-[10px] text-zinc-300 font-mono select-all block break-all">{sessionId}</code>
+                      </div>
+                      <div className="p-3 bg-zinc-950/40 rounded-lg border border-zinc-855 space-y-1">
+                        <span className="text-[9px] uppercase tracking-wider font-bold text-zinc-555 block">Invite Token</span>
+                        <code className="text-[10px] text-purple-300 font-mono select-all block break-all">{session?.invite_token || 'None'}</code>
+                      </div>
+                    </div>
+
+                    {/* Member Controls */}
+                    <div className="space-y-3">
+                      <span className="text-[9.5px] font-bold uppercase tracking-wider text-zinc-505 block">Roster Actions</span>
+                      {participants.map((p) => (
+                        <div key={p.id} className="p-2.5 rounded-lg bg-zinc-950/40 border border-zinc-850 flex items-center justify-between text-xs gap-3">
+                          <span className="text-zinc-300 truncate font-mono">{p.user_id} ({p.role})</span>
+                          <div className="flex gap-2">
+                            {p.connection_status === 'CONNECTED' ? (
+                              <>
+                                <button
+                                  onClick={() => handleDisconnect(p.id)}
+                                  className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-850 text-[10px] font-semibold text-amber-400 border border-zinc-800 transition-all cursor-pointer"
+                                >
+                                  Disconnect Participant
+                                </button>
+                                <button
+                                  onClick={() => handleLeave(p.id)}
+                                  className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-850 text-[10px] font-semibold text-red-400 border border-zinc-800 transition-all cursor-pointer"
+                                >
+                                  Force Leave
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                onClick={() => handleReconnect(p.id)}
+                                className="px-2 py-1 rounded bg-purple-950/40 hover:bg-purple-900/20 text-[10px] font-semibold text-purple-400 border border-purple-900/30 transition-all cursor-pointer"
+                              >
+                                Reconnect Participant
+                              </button>
+                            )}
                           </div>
-                          {internalNotes && (
-                            <div className="p-3 rounded-lg bg-zinc-950/40 border border-zinc-850 text-xs text-zinc-500 space-y-1">
-                              <span className="block text-[9px] uppercase tracking-wider font-bold text-zinc-650">Internal Notes</span>
-                              <p className="italic font-normal">"{internalNotes}"</p>
-                            </div>
-                          )}
                         </div>
-                      );
-                    })()}
+                      ))}
+                    </div>
+                  </div>
+                </details>
+              </div>
+            )}
 
-                    {/* Resolution Details for Finished Session */}
-                    {session.status === 'ENDED' && (
-                      <div className="mt-4 p-4 rounded-xl bg-zinc-950/50 border border-zinc-850 space-y-3">
-                        <div className="flex justify-between items-center text-xs">
-                          <span className="text-zinc-500 font-semibold uppercase tracking-wider text-[9px]">Outcome</span>
-                          {(() => {
-                            const outcome = typeof window !== 'undefined' ? localStorage.getItem(`vq_consultation_${sessionId}_resolutionStatus`) : 'RESOLVED';
-                            const outcomeText = outcome ? outcome.toLowerCase() : 'completed';
-                            const badgeStyle = outcome === 'RESOLVED' 
-                              ? 'bg-emerald-950/40 text-emerald-400 border border-emerald-800/30'
-                              : outcome === 'ESCALATED'
-                              ? 'bg-purple-950/40 text-purple-400 border border-purple-800/30'
-                              : 'bg-red-950/40 text-red-400 border border-red-800/30';
-                            return (
-                              <span className={`text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${badgeStyle}`}>
-                                {outcomeText}
-                              </span>
-                            );
-                          })()}
-                        </div>
-                        {(() => {
-                          const notes = typeof window !== 'undefined' ? localStorage.getItem(`vq_consultation_${sessionId}_resolutionNotes`) : null;
-                          if (!notes) return null;
-                          return (
-                            <div className="space-y-1 pt-2 border-t border-zinc-900">
-                              <span className="block text-[8px] uppercase tracking-wider text-zinc-550 font-bold">Resolution Notes</span>
-                              <p className="text-xs text-zinc-400 leading-relaxed italic">
-                                "{notes}"
-                              </p>
-                            </div>
-                          );
-                        })()}
-                      </div>
-                    )}
+          </div>
 
-                    {/* Collapsible Developer Tools */}
-                    <details className="mt-4 group/meta-dev border-t border-zinc-900/40 pt-3">
-                      <summary className="cursor-pointer select-none text-[8px] uppercase font-bold tracking-wider text-zinc-650 hover:text-zinc-550 transition-colors flex items-center gap-1">
-                        <svg className="w-2.5 h-2.5 group-open/meta-dev:rotate-90 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-                        </svg>
-                        Developer Metadata
-                      </summary>
-                      <div className="mt-2 space-y-2 bg-zinc-950/80 p-3 rounded-lg border border-zinc-900 font-mono text-[9px] text-zinc-550 leading-normal">
-                        <div className="flex justify-between">
-                          <span className="text-zinc-650">Session ID:</span>
-                          <span>{session.id}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-zinc-650">Invite Token:</span>
-                          <span>{session.invite_token}</span>
-                        </div>
-                      </div>
-                    </details>
+          {/* Right Column (Chat Panel + Support Timeline) - occupies 4 columns (30% width) */}
+          <div className="lg:col-span-4 space-y-6 w-full">
+            {/* Chat Panel */}
+            <div className="w-full">
+              <ChatPanel
+                messages={chatMessages}
+                participants={participants}
+                currentParticipantId={currentParticipantId}
+                sessionStatus={session?.status || 'CREATED'}
+                onSendMessage={handleSendMessage}
+              />
+            </div>
 
-                    {session.status !== 'ENDED' && (
-                      <div className="mt-5 flex gap-2">
-                        <button
-                          onClick={handleCopyLink}
-                          className="flex-1 py-2 px-3 rounded-xl bg-purple-950/40 hover:bg-purple-900/20 text-purple-400 border border-purple-900/30 text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-                          </svg>
-                          {copySuccess ? 'Copied!' : 'Invite Customer'}
-                        </button>
-                        <button
-                          onClick={() => setShowEndSessionModal(true)}
-                          className="py-2 px-4 rounded-xl bg-red-950/40 hover:bg-red-900/20 text-red-400 border border-red-900/30 text-xs font-semibold transition-all cursor-pointer"
-                        >
-                          End Session
-                        </button>
+            {/* Support Timeline Card */}
+            <div className="p-6 rounded-2xl bg-zinc-900/40 border border-zinc-800/80 shadow-xl space-y-6">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400 flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+                Support Timeline
+              </h3>
+              
+              <div className="relative pl-6 border-l border-zinc-800 space-y-6 ml-3">
+                {getTimelineItems().map((item) => {
+                  let typeColor = 'bg-zinc-855 text-zinc-450 border-zinc-800';
+                  let dotColor = 'bg-zinc-650 ring-zinc-950';
+                  let icon = (
+                    <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  );
+
+                  if (item.type === 'success') {
+                    typeColor = 'bg-emerald-950/40 text-emerald-400 border border-emerald-900/30';
+                    dotColor = 'bg-emerald-500 ring-zinc-950';
+                    icon = (
+                      <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                      </svg>
+                    );
+                  } else if (item.type === 'warning') {
+                    typeColor = 'bg-amber-950/40 text-amber-400 border border-amber-900/30';
+                    dotColor = 'bg-amber-500 ring-zinc-950';
+                    icon = (
+                      <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                    );
+                  } else if (item.type === 'error') {
+                    typeColor = 'bg-red-950/40 text-red-400 border border-red-900/30';
+                    dotColor = 'bg-red-500 ring-zinc-950';
+                    icon = (
+                      <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    );
+                  }
+
+                  return (
+                    <div key={item.id} className="relative flex items-center justify-between gap-4">
+                      {/* Timeline Dot */}
+                      <span className={`absolute -left-[35px] w-5 h-5 rounded-full ring-4 flex items-center justify-center ${dotColor} ${typeColor}`}>
+                        {icon}
+                      </span>
+                      <div className="flex-1 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
+                        <span className="text-zinc-200 font-medium">{item.label}</span>
+                        <span className="text-[10px] text-zinc-500 font-mono shrink-0">{item.time}</span>
                       </div>
-                    )}
+                    </div>
+                  );
+                })}
+
+                {getTimelineItems().length === 0 && (
+                  <div className="text-zinc-650 text-xs py-4 text-center">
+                    No events recorded.
                   </div>
                 )}
               </div>
             </div>
 
-            {/* Collapsible Session Event Log (Agent-Only) */}
-            <details className="group border border-zinc-800 bg-zinc-900/30 shadow-xl overflow-hidden rounded-2xl">
-              <summary className="p-6 cursor-pointer select-none flex items-center justify-between font-semibold text-xs uppercase tracking-wider text-zinc-450 hover:bg-zinc-900/40 transition-all">
-                <span className="flex items-center gap-2.5">
-                  <svg className="w-4 h-4 text-zinc-500 group-open:rotate-90 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-                  </svg>
-                  Session Event Log
-                </span>
-                <span className="text-[10px] bg-zinc-950 px-2 py-0.5 rounded text-zinc-500 font-mono">
-                  {events.length} events
-                </span>
-              </summary>
-              <div className="px-6 pb-6 pt-2">
-                <div className="rounded-xl bg-zinc-950/80 border border-zinc-850 p-4 max-h-[300px] overflow-y-auto font-mono text-[11px] leading-relaxed space-y-3 scrollbar-thin">
-                  {events.length === 0 ? (
-                    <div className="text-center text-zinc-700 py-6">
-                      No session events recorded.
-                    </div>
-                  ) : (
-                    events.map((event) => (
-                      <div key={event.id} className="pb-2.5 border-b border-zinc-900/40 last:border-0 last:pb-0">
-                        <div className="flex justify-between items-center text-zinc-500">
-                          <span className="text-purple-400 font-semibold">{event.event_type}</span>
-                          <span>{new Date(event.timestamp).toLocaleTimeString()}</span>
-                        </div>
-                        <div className="mt-1 text-zinc-400">
-                          {event.metadata && Object.keys(event.metadata).length > 0 ? (
-                            <pre className="p-2 rounded bg-zinc-900/40 text-zinc-400 overflow-x-auto whitespace-pre-wrap">
-                              {JSON.stringify(event.metadata)}
-                            </pre>
-                          ) : (
-                            <span className="italic text-zinc-750">No metadata payload</span>
-                          )}
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </details>
           </div>
-        ) : (
-          /* CUSTOMER VIEW: Chat (Primary), Optional Video Call (Secondary) */
-          <div className="w-full">
-            {isVideoCallOpen && session?.status !== 'ENDED' ? (
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                {/* Video Consultation Panel (8 Columns) - Primary Focus */}
-                <div className="lg:col-span-8 w-full">
-                  {resolvedUserId && resolvedRole ? (
-                    <MediaRoom
-                      sessionId={sessionId}
-                      userId={resolvedUserId}
-                      role={resolvedRole}
-                      sessionStatus={session?.status || 'CREATED'}
-                    />
-                  ) : (
-                    <div className="p-6 rounded-2xl bg-zinc-900/50 border border-zinc-800/80 text-center text-zinc-500 text-xs">
-                      Initializing video consultation stream...
-                    </div>
-                  )}
-                </div>
 
-                {/* Chat Panel - Secondary Focus (4 Columns) */}
-                <div className="lg:col-span-4 w-full">
-                  <ChatPanel
-                    messages={chatMessages}
-                    participants={participants}
-                    currentParticipantId={currentParticipantId}
-                    sessionStatus={session?.status || 'CREATED'}
-                    onSendMessage={handleSendMessage}
-                  />
-                </div>
-              </div>
-            ) : (
-              /* Full-Width Chat Panel (Video Call Collapsed or Session Ended) */
-              <div className="max-w-4xl mx-auto w-full">
-                <ChatPanel
-                  messages={chatMessages}
-                  participants={participants}
-                  currentParticipantId={currentParticipantId}
-                  sessionStatus={session?.status || 'CREATED'}
-                  onSendMessage={handleSendMessage}
-                />
-              </div>
-            )}
-          </div>
-        )}
+        </div>
       </main>
 
       {showEndSessionModal && (
