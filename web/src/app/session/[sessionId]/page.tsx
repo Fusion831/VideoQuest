@@ -34,22 +34,24 @@ export default function SessionRoomPage({ params }: PageProps) {
 
   const storedIdentityKey = `vq_identity_${sessionId}`;
 
-  // Resolve identity: URL query params first, then session-specific storage, then global agent auth
+  // Resolve identity: session-specific storage first, then global agent auth, then URL query params
   const [resolvedUserId, setResolvedUserId] = useState<string | null>(() => {
     if (typeof window === 'undefined') return currentUserId;
+    const sessionUserId = localStorage.getItem(`${storedIdentityKey}_userId`);
+    if (sessionUserId) return sessionUserId;
     const globalUserId = localStorage.getItem('vq_auth_userId');
     const globalRole = localStorage.getItem('vq_auth_role');
     if (globalRole === 'agent' && globalUserId) return globalUserId;
-    const sessionUserId = localStorage.getItem(`${storedIdentityKey}_userId`);
-    return sessionUserId || currentUserId;
+    return currentUserId;
   });
 
   const [resolvedRole, setResolvedRole] = useState<'agent' | 'customer' | null>(() => {
     if (typeof window === 'undefined') return currentRole;
+    const sessionRole = localStorage.getItem(`${storedIdentityKey}_role`) as 'agent' | 'customer' | null;
+    if (sessionRole) return sessionRole;
     const globalRole = localStorage.getItem('vq_auth_role') as 'agent' | 'customer' | null;
     if (globalRole === 'agent') return 'agent';
-    const sessionRole = localStorage.getItem(`${storedIdentityKey}_role`) as 'agent' | 'customer' | null;
-    return sessionRole || currentRole;
+    return currentRole;
   });
 
   // Keep state and localStorage in sync & log identity resolution path
@@ -67,14 +69,14 @@ export default function SessionRoomPage({ params }: PageProps) {
     let finalRole = resolvedRole;
     let source = 'state defaults';
 
-    if (globalRole === 'agent' && globalUserId) {
-      finalUserId = globalUserId;
-      finalRole = 'agent';
-      source = 'global agent authentication';
-    } else if (sessionUserId && sessionRole) {
+    if (sessionUserId && sessionRole) {
       finalUserId = sessionUserId;
       finalRole = sessionRole;
       source = 'session-specific localstorage';
+    } else if (globalRole === 'agent' && globalUserId) {
+      finalUserId = globalUserId;
+      finalRole = 'agent';
+      source = 'global agent authentication';
     } else if (currentUserId && currentRole) {
       finalUserId = currentUserId;
       finalRole = currentRole;
