@@ -17,7 +17,7 @@ export default function CustomerJoinPage({ params }: PageProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionStatus, setSessionStatus] = useState<string | null>(null);
 
-  const [customerId, setCustomerId] = useState('customer_default');
+  const [customerId, setCustomerId] = useState('');
   const [joinLoading, setJoinLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,6 +51,11 @@ export default function CustomerJoinPage({ params }: PageProps) {
       setJoinLoading(true);
       setError(null);
       await apiClient.joinSession(sessionId, customerId, 'customer', inviteToken);
+      
+      // Store customer identity in session-specific localStorage keys
+      localStorage.setItem(`vq_identity_${sessionId}_userId`, customerId);
+      localStorage.setItem(`vq_identity_${sessionId}_role`, 'customer');
+      
       // Navigate to the session room page
       router.push(`/session/${sessionId}?role=customer&userId=${encodeURIComponent(customerId)}`);
     } catch (err: any) {

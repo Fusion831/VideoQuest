@@ -60,6 +60,8 @@ app.add_middleware(
 
 # Include routes
 app.include_router(session_router, prefix="/api/v1")
+app.include_router(auth_router, prefix="/api/v1")
+
 
 
 @app.get("/health")

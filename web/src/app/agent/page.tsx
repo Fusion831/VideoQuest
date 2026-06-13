@@ -2,12 +2,14 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { apiClient } from '@/lib/api-client';
 import { Session } from '@/lib/types';
 
 export default function AgentDashboard() {
+  const router = useRouter();
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [agentId, setAgentId] = useState('agent_default');
+  const [agentId, setAgentId] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,8 +31,17 @@ export default function AgentDashboard() {
   };
 
   useEffect(() => {
-    fetchSessions();
-  }, []);
+    if (typeof window !== 'undefined') {
+      const savedUserId = localStorage.getItem('vq_auth_userId');
+      const savedRole = localStorage.getItem('vq_auth_role');
+      if (!savedUserId || savedRole !== 'agent') {
+        router.push('/agent/login');
+      } else {
+        setAgentId(savedUserId);
+        fetchSessions();
+      }
+    }
+  }, [router]);
 
   const handleCreateSession = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -99,19 +110,9 @@ export default function AgentDashboard() {
               </p>
               
               <form onSubmit={handleCreateSession} className="space-y-4">
-                <div>
-                  <label htmlFor="agentId" className="block text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2">
-                    Agent Identifier
-                  </label>
-                  <input
-                    id="agentId"
-                    type="text"
-                    value={agentId}
-                    onChange={(e) => setAgentId(e.target.value)}
-                    required
-                    placeholder="e.g. agent_alice"
-                    className="w-full px-4 py-3 rounded-xl bg-zinc-950 border border-zinc-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-zinc-100 placeholder-zinc-600 outline-none transition-all"
-                  />
+                <div className="p-4 rounded-xl bg-zinc-950 border border-zinc-800 text-xs flex justify-between items-center mb-4">
+                  <span className="text-zinc-500 font-medium">Active Agent:</span>
+                  <span className="text-zinc-300 font-semibold">{agentId}</span>
                 </div>
                 <button
                   type="submit"

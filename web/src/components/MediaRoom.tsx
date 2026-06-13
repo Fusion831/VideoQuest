@@ -50,6 +50,57 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
     localStorage.setItem('vq_pref_mic', String(isMicrophonePreConnected));
   }, [isMicrophonePreConnected]);
 
+  // Unified device error handler mapping specific browser/OS exceptions
+  const handleDeviceError = (err: any, deviceType: 'camera' | 'microphone' | 'both') => {
+    console.warn(`[DeviceError] ${deviceType} error:`, err);
+    let msg = '';
+    const name = err.name || '';
+    
+    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+      msg = `${deviceType === 'both' ? 'Camera/Mic' : deviceType === 'camera' ? 'Camera' : 'Microphone'} permission denied`;
+    } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      msg = `No ${deviceType === 'both' ? 'camera/mic' : deviceType} detected`;
+    } else if (name === 'NotReadableError' || name === 'TrackStartError') {
+      msg = `${deviceType === 'both' ? 'Camera/Mic' : deviceType === 'camera' ? 'Camera' : 'Microphone'} currently in use`;
+    } else if (name === 'OverconstrainedError' || name === 'ConstraintNotSatisfiedError') {
+      msg = `${deviceType === 'both' ? 'Hardware' : deviceType === 'camera' ? 'Camera' : 'Microphone'} constraints not met`;
+    } else {
+      msg = `${deviceType === 'both' ? 'Camera/Mic' : deviceType === 'camera' ? 'Camera' : 'Microphone'} unavailable`;
+    }
+    setDeviceError(msg);
+  };
+
+  // Explicit device permission request calls
+  const requestCameraPermission = async () => {
+    try {
+      setDeviceError(null);
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      stream.getTracks().forEach(t => t.stop());
+      setIsCameraPreConnected(true);
+      // Restart local preview
+      if (sessionStatus !== 'ACTIVE') {
+        const previewStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 640, height: 485 },
+          audio: false,
+        });
+        setLocalPreviewStream(previewStream);
+      }
+    } catch (err: any) {
+      handleDeviceError(err, 'camera');
+    }
+  };
+
+  const requestMicrophonePermission = async () => {
+    try {
+      setDeviceError(null);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+      setIsMicrophonePreConnected(true);
+    } catch (err: any) {
+      handleDeviceError(err, 'microphone');
+    }
+  };
+
   // Log token request state
   const tokenRequestStarted = sessionStatus === 'ACTIVE';
   const tokenRequestSucceeded = !!token;
@@ -88,16 +139,7 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
           stream.getTracks().forEach(t => t.stop());
           setDeviceError(null);
         } catch (err: any) {
-          console.warn('getUserMedia permission check failed:', err);
-          if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-            if (hasVideo && hasAudio) {
-              setDeviceError('Camera or microphone permission denied');
-            } else if (hasVideo) {
-              setDeviceError('Camera permission denied');
-            } else {
-              setDeviceError('Microphone permission denied');
-            }
-          }
+          handleDeviceError(err, hasVideo && hasAudio ? 'both' : hasVideo ? 'camera' : 'microphone');
         }
       } catch (err: any) {
         console.error('Failed to enumerate devices:', err);
@@ -212,13 +254,29 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
   );
 
   const deviceWarning = deviceError && (
-    <div className="p-3 bg-red-950/60 border-b border-red-900/40 text-red-300 text-xs flex gap-2.5 items-center font-semibold">
-      <svg className="w-5 h-5 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-      </svg>
-      <div>
-        <span>🚨 Hardware Status: {deviceError}</span>
-        <span className="block text-[10px] text-zinc-400 font-normal mt-0.5">The application remains fully usable. You can still use chat and see others.</span>
+    <div className="p-3 bg-red-950/60 border-b border-red-900/40 text-red-300 text-xs flex flex-col sm:flex-row gap-3 sm:items-center justify-between font-semibold">
+      <div className="flex gap-2.5 items-center">
+        <svg className="w-5 h-5 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+        </svg>
+        <div>
+          <span>🚨 Hardware Status: {deviceError}</span>
+          <span className="block text-[10px] text-zinc-400 font-normal mt-0.5">The application remains fully usable. You can still use chat and see others.</span>
+        </div>
+      </div>
+      <div className="flex gap-2 shrink-0">
+        <button
+          onClick={requestCameraPermission}
+          className="px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold uppercase tracking-wider transition-all active:scale-95"
+        >
+          Retry Camera
+        </button>
+        <button
+          onClick={requestMicrophonePermission}
+          className="px-2.5 py-1 rounded bg-violet-600 hover:bg-violet-500 text-white text-[10px] font-bold uppercase tracking-wider transition-all active:scale-95"
+        >
+          Retry Mic
+        </button>
       </div>
     </div>
   );
@@ -361,6 +419,24 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
     );
   }
 
+  const handleReconnectMedia = async () => {
+    try {
+      setError(null);
+      setToken(null);
+      setLoading(true);
+      console.log('[MediaRoom] Manual reconnect triggered. Re-fetching token...');
+      const res = await apiClient.getLiveKitToken(sessionId, userId, role);
+      setToken(res.token);
+      const publicUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL || 'ws://localhost:7880';
+      setLivekitUrl(publicUrl);
+    } catch (err: any) {
+      console.error('[MediaRoom] Manual reconnect failed:', err);
+      setError(err.message || 'Media server offline');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="rounded-2xl overflow-hidden border border-zinc-800">
@@ -382,8 +458,8 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
       <div className="rounded-2xl overflow-hidden border border-amber-900/30">
         {visualMarker}
         {deviceWarning}
-        <div className="p-6 bg-amber-950/20 text-amber-200 text-xs">
-          <div className="flex items-center gap-3 mb-2 font-semibold">
+        <div className="p-6 bg-amber-950/20 text-amber-200 text-xs space-y-4">
+          <div className="flex items-center gap-3 font-semibold">
             <svg className="w-5 h-5 text-amber-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
@@ -392,6 +468,14 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
           <p className="text-zinc-400 leading-relaxed">
             The support session is fully active, and presence/chat are functional. However, the media server is currently unreachable.
           </p>
+          <div className="flex gap-2">
+            <button
+              onClick={handleReconnectMedia}
+              className="px-3 py-1.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold uppercase tracking-wider transition-all active:scale-95"
+            >
+              Reconnect Media
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -416,6 +500,7 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
           isMicrophonePreConnected={isMicrophonePreConnected}
           setIsCameraPreConnected={setIsCameraPreConnected}
           setIsMicrophonePreConnected={setIsMicrophonePreConnected}
+          handleReconnectMedia={handleReconnectMedia}
         />
         <RoomAudioRenderer />
       </LiveKitRoom>
@@ -424,14 +509,16 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
 }
 
 function getConnectionLabel(state: string) {
-  switch (state) {
-    case 'connected':
+  switch (state.toUpperCase()) {
+    case 'CONNECTED':
       return { label: 'Media Connected', color: 'bg-emerald-500', emoji: '🟢' };
-    case 'connecting':
+    case 'CONNECTING':
       return { label: 'Connecting', color: 'bg-amber-500 animate-pulse', emoji: '🟡' };
-    case 'reconnecting':
+    case 'RECONNECTING':
       return { label: 'Reconnecting', color: 'bg-amber-500 animate-pulse', emoji: '🟡' };
-    case 'disconnected':
+    case 'FAILED':
+      return { label: 'Connection Failed', color: 'bg-red-500 animate-pulse', emoji: '❌' };
+    case 'DISCONNECTED':
     default:
       return { label: 'Media Offline', color: 'bg-red-500', emoji: '🔴' };
   }
@@ -468,12 +555,14 @@ function MediaGrid({
   isMicrophonePreConnected,
   setIsCameraPreConnected,
   setIsMicrophonePreConnected,
+  handleReconnectMedia,
 }: {
   role: 'agent' | 'customer';
   isCameraPreConnected: boolean;
   isMicrophonePreConnected: boolean;
   setIsCameraPreConnected: (val: boolean) => void;
   setIsMicrophonePreConnected: (val: boolean) => void;
+  handleReconnectMedia: () => Promise<void>;
 }) {
   const tracks = useTracks(
     [
@@ -491,13 +580,45 @@ function MediaGrid({
   const remoteParticipant = participants.find((p) => p.identity !== localParticipant?.identity);
   const expectedRemoteRole = role === 'agent' ? 'customer' : 'agent';
 
-  // 1. Local UI Target States for lag-free visual response
+  // 1. Connection Status Watchdog State
+  const [connectionStatus, setConnectionStatus] = useState<'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'DISCONNECTED' | 'FAILED'>('DISCONNECTED');
+  const [reconnectCount, setReconnectCount] = useState(0);
+
+  // 2. Local UI Target States for lag-free visual response
   const [localCameraActive, setLocalCameraActive] = useState(isCameraPreConnected);
   const [localMicActive, setLocalMicActive] = useState(isMicrophonePreConnected);
 
-  // 2. Control locks during active WebRTC negotiations
+  // 3. Control locks during active WebRTC negotiations
   const [cameraSyncing, setCameraSyncing] = useState(false);
   const [micSyncing, setMicSyncing] = useState(false);
+
+  // Watchdog reset on successful connection
+  useEffect(() => {
+    if (connectionStatus === 'CONNECTED') {
+      setReconnectCount(0);
+    }
+  }, [connectionStatus]);
+
+  // Watchdog backoff reconnect triggers
+  useEffect(() => {
+    if (connectionStatus !== 'DISCONNECTED' && connectionStatus !== 'FAILED') return;
+    if (reconnectCount >= 3) return;
+
+    console.log(`[Watchdog] Detected offline media state. Queueing auto-reconnect attempt ${reconnectCount + 1}/3...`);
+    const delay = Math.pow(2, reconnectCount) * 2000;
+    
+    const timer = setTimeout(async () => {
+      try {
+        console.log(`[Watchdog] Auto-reconnecting...`);
+        await handleReconnectMedia();
+        setReconnectCount(prev => prev + 1);
+      } catch (err) {
+        console.error('[Watchdog] Auto-reconnect failed:', err);
+      }
+    }, delay);
+
+    return () => clearTimeout(timer);
+  }, [connectionStatus, reconnectCount, handleReconnectMedia]);
 
   // LiveKit Diagnostic Event Listeners
   useEffect(() => {
@@ -520,6 +641,19 @@ function MediaGrid({
       }));
     };
 
+    const handleStateChange = (state: string) => {
+      console.log(`[LK-DIAG] Connection State Change: ${state}`);
+      if (state === 'connected') {
+        setConnectionStatus('CONNECTED');
+      } else if (state === 'connecting') {
+        setConnectionStatus('CONNECTING');
+      } else if (state === 'reconnecting') {
+        setConnectionStatus('RECONNECTING');
+      } else if (state === 'disconnected') {
+        setConnectionStatus('DISCONNECTED');
+      }
+    };
+
     const events = [
       RoomEvent.ParticipantConnected,
       RoomEvent.ParticipantDisconnected,
@@ -533,12 +667,22 @@ function MediaGrid({
     ];
 
     events.forEach(evt => {
-      room.on(evt, (...args: any[]) => logEvent(evt, ...args));
+      if (evt === RoomEvent.ConnectionStateChanged) {
+        room.on(evt, handleStateChange);
+      } else {
+        room.on(evt, (...args: any[]) => logEvent(evt, ...args));
+      }
     });
+
+    handleStateChange(room.state);
 
     return () => {
       events.forEach(evt => {
-        room.off(evt, (...args: any[]) => logEvent(evt, ...args));
+        if (evt === RoomEvent.ConnectionStateChanged) {
+          room.off(evt, handleStateChange);
+        } else {
+          room.off(evt, (...args: any[]) => logEvent(evt, ...args));
+        }
       });
     };
   }, [room]);
@@ -650,8 +794,7 @@ function MediaGrid({
   });
 
   // 8. Connection state mapping
-  const connState = room?.state || 'disconnected';
-  const conn = getConnectionLabel(connState);
+  const conn = getConnectionLabel(connectionStatus);
 
   // Local/Remote Video TrackReferences
   const localVideoTrackRef = tracks.find(
@@ -831,6 +974,14 @@ function MediaGrid({
           </button>
           
           <button
+            onClick={handleReconnectMedia}
+            className="px-2.5 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 text-[10px] font-bold uppercase text-indigo-400 hover:text-indigo-300 transition-all active:scale-95 flex items-center gap-1.5"
+            title="Force reconnect media stream"
+          >
+            🔄 Reconnect Media
+          </button>
+          
+          <button
             onClick={handleToggleMute}
             disabled={micSyncing}
             className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all active:scale-95 flex items-center gap-1.5 ${
@@ -900,7 +1051,7 @@ function MediaGrid({
           </div>
           <div className="grid grid-cols-2 gap-x-6 gap-y-1">
             <div><span className="text-zinc-650">Room Name:</span> {room?.name || 'N/A'}</div>
-            <div><span className="text-zinc-650">Connection State:</span> {connState.toUpperCase()}</div>
+            <div><span className="text-zinc-650">Connection State:</span> {connectionStatus.toUpperCase()}</div>
             <div><span className="text-zinc-650">Identity:</span> {localParticipant?.identity || 'N/A'}</div>
             <div><span className="text-zinc-650">Sid:</span> {localParticipant?.sid || 'N/A'}</div>
             <div><span className="text-zinc-650">Published Video:</span> {isLocalVideoPublished ? '🟢 Active' : '🔴 Muted/Inactive'}</div>

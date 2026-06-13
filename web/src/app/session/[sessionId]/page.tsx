@@ -34,28 +34,29 @@ export default function SessionRoomPage({ params }: PageProps) {
 
   const storedIdentityKey = `vq_identity_${sessionId}`;
 
-  // UX1 fix: resolve identity from URL params first, fall back to localStorage
+  // Resolve identity: URL query params first, then session-specific storage, then global agent auth
   const [resolvedUserId, setResolvedUserId] = useState<string | null>(() => {
     if (typeof window === 'undefined') return currentUserId;
-    return currentUserId || localStorage.getItem(`${storedIdentityKey}_userId`);
+    const sessionVal = currentUserId || localStorage.getItem(`${storedIdentityKey}_userId`);
+    const globalVal = localStorage.getItem('vq_auth_userId');
+    return sessionVal || globalVal;
   });
   const [resolvedRole, setResolvedRole] = useState<'agent' | 'customer' | null>(() => {
     if (typeof window === 'undefined') return currentRole;
-    const stored = localStorage.getItem(`${storedIdentityKey}_role`) as 'agent' | 'customer' | null;
-    return currentRole || stored;
+    const sessionVal = localStorage.getItem(`${storedIdentityKey}_role`) as 'agent' | 'customer' | null;
+    const globalVal = localStorage.getItem('vq_auth_role') as 'agent' | 'customer' | null;
+    return currentRole || sessionVal || globalVal;
   });
 
-  // Keep state and localStorage in sync if URL query parameters exist
+  // Keep state and localStorage in sync
   useEffect(() => {
-    if (currentUserId && currentRole) {
-      setResolvedUserId(currentUserId);
-      setResolvedRole(currentRole);
+    if (resolvedUserId && resolvedRole) {
       if (typeof window !== 'undefined') {
-        localStorage.setItem(`${storedIdentityKey}_userId`, currentUserId);
-        localStorage.setItem(`${storedIdentityKey}_role`, currentRole);
+        localStorage.setItem(`${storedIdentityKey}_userId`, resolvedUserId);
+        localStorage.setItem(`${storedIdentityKey}_role`, resolvedRole);
       }
     }
-  }, [currentUserId, currentRole, storedIdentityKey]);
+  }, [resolvedUserId, resolvedRole, storedIdentityKey]);
 
   // Find current participant ID from the loaded participants list
   const currentParticipant = participants.find(
@@ -350,7 +351,7 @@ export default function SessionRoomPage({ params }: PageProps) {
           /* AGENT VIEW: Two columns layout with diagnostics at the bottom */
           <div className="space-y-8">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-              {/* Left Column (8 cols): Media Call + Chat */}
+              {/* Left Column (8 cols): Media Room + Participants Roster */}
               <div className="lg:col-span-8 space-y-6">
                 {resolvedUserId && resolvedRole ? (
                   <MediaRoom
@@ -365,6 +366,87 @@ export default function SessionRoomPage({ params }: PageProps) {
                   </div>
                 )}
 
+                {/* Participant Roster */}
+                <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30">
+                  <h3 className="text-sm font-semibold uppercase tracking-wider text-zinc-400 mb-4">
+                    Active Roster
+                  </h3>
+                  
+                  {participants.length === 0 ? (
+                    <div className="py-8 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl bg-zinc-950/25">
+                      No participants registered yet.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {participants.map((p) => (
+                        <div
+                          key={p.id}
+                          className="p-4 rounded-xl bg-zinc-950 border border-zinc-800 flex flex-col justify-between gap-3"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="font-semibold text-sm text-zinc-200">{p.user_id}</div>
+                              <div className="text-[10px] text-zinc-500 font-medium tracking-wider uppercase mt-0.5">
+                                {p.role}
+                              </div>
+                            </div>
+
+                            <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
+                              p.connection_status === 'CONNECTED'
+                                ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800/40'
+                                : p.connection_status === 'DISCONNECTED'
+                                ? 'bg-amber-950/50 text-amber-400 border border-amber-800/40 animate-pulse'
+                                : 'bg-zinc-900 text-zinc-500 border border-zinc-800'
+                            }`}>
+                              {p.connection_status}
+                            </span>
+                          </div>
+
+                          {session?.status !== 'ENDED' && (
+                            <div className="flex gap-1.5 border-t border-zinc-900 pt-2.5">
+                              {p.connection_status === 'CONNECTED' && (
+                                <>
+                                  <button
+                                    onClick={() => handleDisconnect(p.id)}
+                                    className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-850 text-[10px] font-semibold text-amber-400 transition-all active:scale-95"
+                                  >
+                                    Disconnect
+                                  </button>
+                                  <button
+                                    onClick={() => handleLeave(p.id)}
+                                    className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-850 text-[10px] font-semibold text-red-400 transition-all active:scale-95"
+                                  >
+                                    Leave
+                                  </button>
+                                </>
+                              )}
+                              {p.connection_status === 'DISCONNECTED' && (
+                                <>
+                                  <button
+                                    onClick={() => handleReconnect(p.id)}
+                                    className="flex-1 py-1 rounded bg-indigo-950 hover:bg-indigo-900/30 text-[10px] font-semibold text-indigo-400 border border-indigo-800/30 transition-all active:scale-95"
+                                  >
+                                    Reconnect
+                                  </button>
+                                  <button
+                                    onClick={() => handleLeave(p.id)}
+                                    className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-850 text-[10px] font-semibold text-red-400 transition-all active:scale-95"
+                                  >
+                                    Leave
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Right Column (4 cols): Chat + Session Details */}
+              <div className="lg:col-span-4 space-y-6">
                 <ChatPanel
                   messages={chatMessages}
                   participants={participants}
@@ -372,10 +454,7 @@ export default function SessionRoomPage({ params }: PageProps) {
                   sessionStatus={session?.status || 'CREATED'}
                   onSendMessage={handleSendMessage}
                 />
-              </div>
 
-              {/* Right Column (4 cols): Metadata & Participant Roster */}
-              <div className="lg:col-span-4 space-y-6">
                 {/* Session Metadata */}
                 {session && (
                   <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30">
@@ -385,7 +464,7 @@ export default function SessionRoomPage({ params }: PageProps) {
                     <div className="space-y-3 text-xs">
                       <div className="flex justify-between py-1 border-b border-zinc-800/40">
                         <span className="text-zinc-500">Session ID</span>
-                        <span className="font-mono text-zinc-300">{session.id}</span>
+                        <span className="font-mono text-zinc-350">{session.id}</span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-zinc-800/40">
                         <span className="text-zinc-500">Assigned Agent</span>
@@ -422,84 +501,6 @@ export default function SessionRoomPage({ params }: PageProps) {
                     )}
                   </div>
                 )}
-
-                {/* Participant Roster */}
-                <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30">
-                  <h3 className="text-sm font-semibold uppercase tracking-wider text-zinc-400 mb-4">
-                    Active Roster
-                  </h3>
-                  
-                  {participants.length === 0 ? (
-                    <div className="py-8 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl bg-zinc-950/25">
-                      No participants registered yet.
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {participants.map((p) => (
-                        <div
-                          key={p.id}
-                          className="p-4 rounded-xl bg-zinc-950 border border-zinc-800 flex flex-col gap-3"
-                        >
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <div className="font-semibold text-sm text-zinc-200">{p.user_id}</div>
-                              <div className="text-[10px] text-zinc-500 font-medium tracking-wider uppercase mt-0.5">
-                                {p.role}
-                              </div>
-                            </div>
-
-                            <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
-                              p.connection_status === 'CONNECTED'
-                                ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800/40'
-                                : p.connection_status === 'DISCONNECTED'
-                                ? 'bg-amber-950/50 text-amber-400 border border-amber-800/40 animate-pulse'
-                                : 'bg-zinc-900 text-zinc-500 border border-zinc-800'
-                            }`}>
-                              {p.connection_status}
-                            </span>
-                          </div>
-
-                          {session?.status !== 'ENDED' && (
-                            <div className="flex gap-1.5 border-t border-zinc-900 pt-2.5">
-                              {p.connection_status === 'CONNECTED' && (
-                                <>
-                                  <button
-                                    onClick={() => handleDisconnect(p.id)}
-                                    className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] font-semibold text-amber-400 transition-all"
-                                  >
-                                    Disconnect
-                                  </button>
-                                  <button
-                                    onClick={() => handleLeave(p.id)}
-                                    className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] font-semibold text-red-400 transition-all"
-                                  >
-                                    Leave
-                                  </button>
-                                </>
-                              )}
-                              {p.connection_status === 'DISCONNECTED' && (
-                                <>
-                                  <button
-                                    onClick={() => handleReconnect(p.id)}
-                                    className="flex-1 py-1 rounded bg-indigo-950 hover:bg-indigo-900/30 text-[10px] font-semibold text-indigo-400 border border-indigo-800/30 transition-all"
-                                  >
-                                    Reconnect
-                                  </button>
-                                  <button
-                                    onClick={() => handleLeave(p.id)}
-                                    className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] font-semibold text-red-400 transition-all"
-                                  >
-                                    Leave
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
               </div>
             </div>
 
@@ -546,28 +547,75 @@ export default function SessionRoomPage({ params }: PageProps) {
             </details>
           </div>
         ) : (
-          /* CUSTOMER VIEW: Single Column layout centered, absolutely no diagnostics or simulator elements */
-          <div className="max-w-4xl mx-auto space-y-6">
-            {resolvedUserId && resolvedRole ? (
-              <MediaRoom
-                sessionId={sessionId}
-                userId={resolvedUserId}
-                role={resolvedRole}
-                sessionStatus={session?.status || 'CREATED'}
-              />
-            ) : (
-              <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 text-center text-zinc-500 text-xs">
-                Initializing secure video stream...
-              </div>
-            )}
+          /* CUSTOMER VIEW: Media Room + Participants Roster (Left), Chat (Right) - Zero diagnostics or agent/admin controls */
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            {/* Left Column (8 cols): Media Room + Participants Roster */}
+            <div className="lg:col-span-8 space-y-6">
+              {resolvedUserId && resolvedRole ? (
+                <MediaRoom
+                  sessionId={sessionId}
+                  userId={resolvedUserId}
+                  role={resolvedRole}
+                  sessionStatus={session?.status || 'CREATED'}
+                />
+              ) : (
+                <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 text-center text-zinc-500 text-xs">
+                  Initializing secure video stream...
+                </div>
+              )}
 
-            <ChatPanel
-              messages={chatMessages}
-              participants={participants}
-              currentParticipantId={currentParticipantId}
-              sessionStatus={session?.status || 'CREATED'}
-              onSendMessage={handleSendMessage}
-            />
+              {/* Participant Roster */}
+              <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-zinc-400 mb-4">
+                  Active Roster
+                </h3>
+                
+                {participants.length === 0 ? (
+                  <div className="py-8 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl bg-zinc-950/25">
+                    No participants registered yet.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {participants.map((p) => (
+                      <div
+                        key={p.id}
+                        className="p-4 rounded-xl bg-zinc-950 border border-zinc-800 flex flex-col justify-between gap-3"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="font-semibold text-sm text-zinc-200">{p.user_id}</div>
+                            <div className="text-[10px] text-zinc-500 font-medium tracking-wider uppercase mt-0.5">
+                              {p.role}
+                            </div>
+                          </div>
+
+                          <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
+                            p.connection_status === 'CONNECTED'
+                              ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800/40'
+                              : p.connection_status === 'DISCONNECTED'
+                              ? 'bg-amber-950/50 text-amber-400 border border-amber-800/40 animate-pulse'
+                              : 'bg-zinc-900 text-zinc-500 border border-zinc-800'
+                          }`}>
+                            {p.connection_status}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Right Column (4 cols): Chat Panel */}
+            <div className="lg:col-span-4">
+              <ChatPanel
+                messages={chatMessages}
+                participants={participants}
+                currentParticipantId={currentParticipantId}
+                sessionStatus={session?.status || 'CREATED'}
+                onSendMessage={handleSendMessage}
+              />
+            </div>
           </div>
         )}
       </main>

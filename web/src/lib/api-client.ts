@@ -22,6 +22,38 @@ async function fetchJson<T>(
     headers.set('Content-Type', 'application/json');
   }
 
+  // Auto-attach stored credentials if available in browser
+  if (typeof window !== 'undefined') {
+    // 1. Resolve session-specific identity if url matches a session path
+    const sessionMatch = url.match(/\/sessions\/([a-f0-9-]+)/i);
+    let resolvedUserId: string | null = null;
+    let resolvedRole: string | null = null;
+    
+    if (sessionMatch) {
+      const sessionId = sessionMatch[1];
+      resolvedUserId = localStorage.getItem(`vq_identity_${sessionId}_userId`);
+      resolvedRole = localStorage.getItem(`vq_identity_${sessionId}_role`);
+    }
+    
+    // 2. Fall back to global authenticated agent identity
+    if (!resolvedUserId || !resolvedRole) {
+      resolvedUserId = localStorage.getItem('vq_auth_userId');
+      resolvedRole = localStorage.getItem('vq_auth_role');
+    }
+    
+    if (resolvedUserId && !headers.has('X-User-ID')) {
+      headers.set('X-User-ID', resolvedUserId);
+    }
+    if (resolvedRole && !headers.has('X-User-Role')) {
+      headers.set('X-User-Role', resolvedRole.toUpperCase());
+    }
+    
+    const savedToken = localStorage.getItem('vq_auth_token');
+    if (savedToken && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${savedToken}`);
+    }
+  }
+
   const response = await fetch(url, { ...options, headers });
 
   if (!response.ok) {
@@ -40,16 +72,28 @@ async function fetchJson<T>(
 
 export const apiClient = {
   /**
+   * Authentication
+   */
+  async login(username: string, password: string): Promise<{ status: string; token: string; user_id: string; role: string }> {
+    const res = await fetchJson<{ status: string; token: string; user_id: string; role: string }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    });
+    if (typeof window !== 'undefined' && res.status === 'success') {
+      localStorage.setItem('vq_auth_userId', res.user_id);
+      localStorage.setItem('vq_auth_role', res.role.toLowerCase());
+      localStorage.setItem('vq_auth_token', res.token);
+    }
+    return res;
+  },
+
+  /**
    * Sessions
    */
   async createSession(agentId: string): Promise<Session> {
     return fetchJson<Session>('/sessions/', {
       method: 'POST',
       body: JSON.stringify({ agent_id: agentId }),
-      headers: {
-        'X-User-ID': agentId,
-        'X-User-Role': 'agent',
-      },
     });
   },
 
