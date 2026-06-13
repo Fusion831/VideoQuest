@@ -214,10 +214,22 @@ class SessionService:
 
     async def get_session_events(self, session_id: uuid.UUID, initiator: Identity) -> List[DomainSessionEvent]:
         """Retrieve all events related to a session."""
-        if not initiator.has_permission(Permission.VIEW_DIAGNOSTICS):
-            raise PermissionDenied("Only agents can view diagnostics.")
         session = await self.session_repo.get_by_id(session_id)
         if not session:
             raise SessionNotFound(str(session_id))
+
+        # Authorize: Assigned agent or registered customer participant of this session
+        from src.domain.models import ParticipantRole
+        role_val = initiator.role.upper()
+        if role_val == ParticipantRole.AGENT.value:
+            if initiator.user_id != session.agent_id:
+                raise PermissionDenied("Only the assigned agent can view this session's events.")
+        elif role_val == ParticipantRole.CUSTOMER.value:
+            participant = await self.participant_repo.get_by_session_and_role(session_id, ParticipantRole.CUSTOMER.value)
+            if not participant or participant.user_id != initiator.user_id:
+                raise PermissionDenied("Only registered session participants can view events.")
+        else:
+            raise PermissionDenied("Unauthorized role to view events.")
+
         return await self.event_repo.get_by_session_id(session_id)
 

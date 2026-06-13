@@ -119,6 +119,7 @@ export default function SessionRoomPage({ params }: PageProps) {
   const [resolutionStatus, setResolutionStatus] = useState('RESOLVED');
   const [resolutionNotes, setResolutionNotes] = useState('');
   const [endingSession, setEndingSession] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -203,11 +204,13 @@ export default function SessionRoomPage({ params }: PageProps) {
   const refreshRoomData = async () => {
     if (!sessionId) return;
     try {
-      const isAgent = resolvedRole === 'agent';
       const [sessionRes, participantsRes, eventsRes, chatMessagesRes] = await Promise.all([
         apiClient.getSession(sessionId),
         apiClient.getSessionParticipants(sessionId),
-        isAgent ? apiClient.getSessionEvents(sessionId) : Promise.resolve([]),
+        apiClient.getSessionEvents(sessionId).catch((err) => {
+          console.warn('[refreshRoomData] Failed to fetch events:', err);
+          return [];
+        }),
         apiClient.getChatMessages(sessionId),
       ]);
       setSession(sessionRes);
@@ -228,15 +231,7 @@ export default function SessionRoomPage({ params }: PageProps) {
     refreshRoomData();
   }, [sessionId, resolvedRole]);
 
-  // Redirect agent if session status transitions to ENDED on backend
-  useEffect(() => {
-    if (session?.status === 'ENDED' && resolvedRole === 'agent') {
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('vq_toast_message', 'Support session completed.');
-      }
-      router.push('/agent');
-    }
-  }, [session?.status, resolvedRole, router]);
+  // No immediate redirect of agent when session ends to allow viewing conversation history
 
   // Sync localLeaveState with participant status from backend
   useEffect(() => {
@@ -471,10 +466,9 @@ export default function SessionRoomPage({ params }: PageProps) {
       if (typeof window !== 'undefined') {
         localStorage.setItem(`vq_consultation_${sessionId}_resolutionStatus`, resolutionStatus);
         localStorage.setItem(`vq_consultation_${sessionId}_resolutionNotes`, resolutionNotes);
-        localStorage.setItem('vq_toast_message', 'Support session completed.');
       }
       setShowEndSessionModal(false);
-      router.push('/agent');
+      await refreshRoomData();
     } catch (err: any) {
       setError(err.message || 'Failed to end session');
     } finally {
@@ -680,6 +674,76 @@ export default function SessionRoomPage({ params }: PageProps) {
           });
         });
     }
+
+    return items.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+  };
+
+  const getSessionDurationLabel = () => {
+    if (!session || !session.started_at) return '0 minutes';
+    const start = new Date(session.started_at).getTime();
+    const end = session.ended_at ? new Date(session.ended_at).getTime() : new Date(session.updated_at).getTime();
+    const diffMins = Math.max(0, Math.floor((end - start) / 60000));
+    return `${diffMins} minutes`;
+  };
+
+  const getResolutionStatusLabel = () => {
+    const resEvent = events.find(e => e.event_type === 'ISSUE_RESOLVED' || e.event_type === 'FOLLOW_UP_REQUESTED');
+    if (resEvent) {
+      const status = resEvent.metadata?.status;
+      if (status) {
+        if (status === 'RESOLVED') return 'Resolved';
+        if (status === 'ESCALATED') return 'Escalated';
+        if (status === 'UNRESOLVED') return 'Unresolved';
+        return status;
+      }
+      return resEvent.event_type === 'ISSUE_RESOLVED' ? 'Resolved' : 'Follow-up Requested';
+    }
+    if (typeof window !== 'undefined') {
+      const storedStatus = localStorage.getItem(`vq_consultation_${sessionId}_resolutionStatus`);
+      if (storedStatus) {
+        if (storedStatus === 'RESOLVED') return 'Resolved';
+        if (storedStatus === 'ESCALATED') return 'Escalated';
+        if (storedStatus === 'UNRESOLVED') return 'Unresolved';
+        return storedStatus;
+      }
+    }
+    return 'Completed';
+  };
+
+  const getFullHistoryItems = () => {
+    const items: { id: string; timestamp: Date; time: string; type: 'event' | 'message'; senderRole?: 'agent' | 'customer'; senderName?: string; content?: string; label?: string }[] = [];
+
+    const formatTime = (date: Date) => {
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    };
+
+    getTimelineItems().forEach(evt => {
+      items.push({
+        id: evt.id,
+        timestamp: evt.timestamp,
+        time: evt.time,
+        type: 'event',
+        label: evt.label,
+      });
+    });
+
+    chatMessages
+      .filter(msg => msg.message_type === 'USER')
+      .forEach(msg => {
+        const sender = participants.find(p => p.id === msg.sender_participant_id);
+        const role = sender?.role?.toLowerCase() as 'agent' | 'customer' | undefined || 'customer';
+        const senderName = role === 'agent' ? 'Agent' : (customerName || 'Customer');
+
+        items.push({
+          id: msg.id,
+          timestamp: new Date(msg.created_at),
+          time: formatTime(new Date(msg.created_at)),
+          type: 'message',
+          senderRole: role,
+          senderName: senderName,
+          content: msg.content,
+        });
+      });
 
     return items.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
   };
@@ -892,7 +956,7 @@ export default function SessionRoomPage({ params }: PageProps) {
               </Link>
             </div>
           </div>
-        ) : viewState === RoomViewState.SESSION_ENDED && resolvedRole === 'customer' ? (
+        ) : viewState === RoomViewState.SESSION_ENDED ? (
           <div className="w-full max-w-xl mx-auto p-8 sm:p-10 bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl relative space-y-6 text-center my-12 animate-scale-in">
             <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-purple-500/20 to-transparent" />
             <div className="w-12 h-12 rounded-full bg-emerald-950/40 border border-emerald-900/30 flex items-center justify-center mx-auto text-emerald-400">
@@ -901,33 +965,90 @@ export default function SessionRoomPage({ params }: PageProps) {
               </svg>
             </div>
             <div className="space-y-2">
-              <h2 className="text-xl font-bold text-zinc-100">This support session has ended.</h2>
+              <h2 className="text-xl font-bold text-zinc-100">
+                {resolvedRole === 'agent' ? 'Support session completed.' : 'This support session has ended.'}
+              </h2>
               <p className="text-zinc-400 text-sm">
-                Thank you for contacting support.
+                {resolvedRole === 'agent' 
+                  ? 'The consultation details have been recorded.' 
+                  : 'Thank you for contacting support.'}
               </p>
             </div>
-            <div className="p-4 bg-zinc-955 border border-zinc-900 rounded-xl text-xs space-y-2 max-w-sm mx-auto text-left">
-              <div className="flex justify-between py-0.5">
-                <span className="text-zinc-550">Agent</span>
+
+            {/* Improved Session Summary Card */}
+            <div className="p-5 bg-zinc-955 border border-zinc-900 rounded-xl text-xs space-y-3.5 max-w-md mx-auto text-left">
+              <div className="flex justify-between items-center py-0.5">
+                <span className="text-zinc-550 font-medium">Support Specialist</span>
                 <span className="font-semibold text-zinc-300">{agentName}</span>
               </div>
-              <div className="flex justify-between py-0.5 border-t border-zinc-900 pt-1.5">
-                <span className="text-zinc-550">Duration</span>
-                <span className="font-semibold text-zinc-300">{getWaitingTimeLabel()}</span>
+              <div className="flex justify-between items-center py-0.5 border-t border-zinc-900 pt-3">
+                <span className="text-zinc-550 font-medium">Session Duration</span>
+                <span className="font-semibold text-zinc-300">{getSessionDurationLabel()}</span>
               </div>
-              <div className="flex justify-between py-0.5 border-t border-zinc-900 pt-1.5">
-                <span className="text-zinc-550">Status</span>
-                <span className="font-semibold text-emerald-400">Completed</span>
+              <div className="flex justify-between items-center py-0.5 border-t border-zinc-900 pt-3">
+                <span className="text-zinc-555 font-medium">Started At</span>
+                <span className="font-semibold text-zinc-300">
+                  {session?.started_at ? new Date(session.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--'}
+                </span>
+              </div>
+              <div className="flex justify-between items-center py-0.5 border-t border-zinc-900 pt-3">
+                <span className="text-zinc-555 font-medium">Ended At</span>
+                <span className="font-semibold text-zinc-300">
+                  {session?.ended_at ? new Date(session.ended_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--'}
+                </span>
+              </div>
+              <div className="flex justify-between items-center py-0.5 border-t border-zinc-900 pt-3">
+                <span className="text-zinc-555 font-medium">Resolution Status</span>
+                <span className={`font-semibold ${
+                  getResolutionStatusLabel() === 'Resolved' 
+                    ? 'text-emerald-400' 
+                    : getResolutionStatusLabel() === 'Escalated' 
+                    ? 'text-purple-400' 
+                    : 'text-amber-400'
+                }`}>
+                  {getResolutionStatusLabel()}
+                </span>
               </div>
             </div>
-            <div className="max-w-sm mx-auto pt-2">
+
+            <div className="flex flex-col gap-3 max-w-md mx-auto pt-2">
+              <button
+                type="button"
+                onClick={() => setShowHistory(!showHistory)}
+                className="w-full py-2.5 px-4 rounded-xl border border-purple-500/30 text-purple-400 bg-purple-950/10 hover:bg-purple-900/20 text-xs font-semibold text-center transition-all active:scale-95 cursor-pointer"
+              >
+                {showHistory ? 'Hide Conversation History' : 'View Conversation History'}
+              </button>
+
               <Link
-                href="/"
+                href={resolvedRole === 'agent' ? '/agent' : '/'}
                 className="w-full py-2.5 px-4 rounded-xl border border-zinc-800 text-zinc-355 hover:bg-zinc-850 text-xs font-semibold text-center block transition-all active:scale-95 cursor-pointer"
               >
                 Return Home
               </Link>
             </div>
+
+            {/* Conversation History Section */}
+            {showHistory && (
+              <div className="mt-6 border-t border-zinc-800 pt-6 text-left space-y-4 max-h-[350px] overflow-y-auto pr-2 custom-scrollbar max-w-md mx-auto">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-500 mb-2">Conversation History</h4>
+                {getFullHistoryItems().map((item) => (
+                  <div key={item.id} className="space-y-1 py-1">
+                    <span className="text-[10px] text-zinc-500 font-mono block">{item.time}</span>
+                    {item.type === 'event' ? (
+                      <span className="text-xs text-zinc-400 font-medium block">{item.label}</span>
+                    ) : (
+                      <div className="text-xs">
+                        <span className="font-semibold text-purple-400 block">{item.senderRole === 'agent' ? 'Agent:' : 'Customer:'}</span>
+                        <p className="text-zinc-300 font-normal mt-0.5 leading-relaxed bg-zinc-955 p-2.5 rounded-lg border border-zinc-900 italic">
+                          "{item.content}"
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           /* 2-Column Grid Layout */

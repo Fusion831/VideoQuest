@@ -168,3 +168,44 @@ async def test_service_transaction_rollback(db_session):
         # Verify the session was NOT saved (rolled back)
         sessions, total = await service.list_sessions()
         assert total == 0
+
+
+async def test_service_get_session_events_authorization(db_session):
+    """Verify that only the assigned agent and the registered customer of the session can query events."""
+    from src.infrastructure.repositories import ParticipantRepository
+    from src.domain.models import DomainParticipant, ParticipantRole
+    from src.core.exceptions import PermissionDenied
+
+    service = await get_service(db_session)
+    agent_identity = Identity(user_id="agent_1", role="agent")
+    session = await service.create_session(agent_identity)
+
+    # 1. Assigned agent should be allowed
+    events = await service.get_session_events(session.id, initiator=agent_identity)
+    assert len(events) == 1
+
+    # 2. A different agent should be denied
+    other_agent_identity = Identity(user_id="agent_2", role="agent")
+    with pytest.raises(PermissionDenied) as exc_info:
+        await service.get_session_events(session.id, initiator=other_agent_identity)
+    assert "Only the assigned agent" in str(exc_info.value)
+
+    # 3. An unregistered customer should be denied
+    unregistered_customer = Identity(user_id="customer_1", role="customer")
+    with pytest.raises(PermissionDenied) as exc_info:
+        await service.get_session_events(session.id, initiator=unregistered_customer)
+    assert "Only registered session participants" in str(exc_info.value)
+
+    # 4. A registered customer should be allowed
+    # Add registered customer to the database
+    part_repo = ParticipantRepository(db_session)
+    participant = DomainParticipant(
+        session_id=session.id,
+        role=ParticipantRole.CUSTOMER,
+        user_id="customer_1",
+    )
+    await part_repo.save(participant)
+    await db_session.commit()
+
+    events = await service.get_session_events(session.id, initiator=unregistered_customer)
+    assert len(events) == 1
