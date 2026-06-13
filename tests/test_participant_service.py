@@ -142,7 +142,9 @@ async def test_participant_leave_flow(db_session):
     
     # Verify event
     events = await session_service.get_session_events(session.id)
-    assert events[-1].event_type == SessionEventType.PARTICIPANT_LEFT
+    event_types = [e.event_type for e in events]
+    assert SessionEventType.PARTICIPANT_LEFT in event_types
+    assert SessionEventType.SESSION_ENDED in event_types
     
     # Idempotent leave (should not throw, nor add events)
     left_p_again = await participant_service.leave_session(session.id, p.id)
@@ -171,9 +173,9 @@ async def test_participant_disconnect_reconnect_flow(db_session):
     with pytest.raises(InvalidConnectionTransition):
         await participant_service.reconnect_participant(session.id, p.id)
         
-    # Leave and try to reconnect (should fail from LEFT state)
+    # Leave and try to reconnect (should fail with SessionAlreadyEnded since session ends when participant leaves)
     await participant_service.leave_session(session.id, p.id)
-    with pytest.raises(InvalidConnectionTransition):
+    with pytest.raises(SessionAlreadyEnded):
         await participant_service.reconnect_participant(session.id, p.id)
 
 

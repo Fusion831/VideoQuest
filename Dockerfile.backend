@@ -1,0 +1,35 @@
+FROM python:3.13-slim AS builder
+
+WORKDIR /app
+
+# Install uv dynamically
+RUN pip install --no-cache-dir uv
+
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
+
+# Run dependency sync
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --frozen --no-install-project --no-dev
+
+# Final production stage
+FROM python:3.13-slim
+
+WORKDIR /app
+
+# Copy virtual env from builder
+COPY --from=builder /app/.venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONPATH="/app"
+
+# Copy source and configurations
+COPY src /app/src
+COPY main.py /app/main.py
+COPY migrations /app/migrations
+COPY alembic.ini /app/alembic.ini
+
+EXPOSE 8000
+
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

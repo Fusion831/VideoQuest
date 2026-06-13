@@ -186,6 +186,44 @@ class ParticipantService:
                     },
                 )
                 await self.event_repo.save(event)
+
+                # Transition session to ENDED when a participant leaves
+                session = await self.session_repo.get_by_id(session_id)
+                if session and session.status != SessionStatus.ENDED:
+                    session.end()
+                    await self.session_repo.save(session)
+                    
+                    end_event = DomainSessionEvent(
+                        session_id=session_id,
+                        event_type=SessionEventType.SESSION_ENDED,
+                        metadata={
+                            "ended_by": saved_participant.user_id,
+                            "role": saved_participant.role.value,
+                            "reason": "Participant left the session",
+                        },
+                    )
+                    await self.event_repo.save(end_event)
+                    
+                    # Mark all other participants as LEFT too
+                    all_participants = await self.participant_repo.get_by_session_id(session_id)
+                    for p in all_participants:
+                        if p.id != participant_id and p.connection_status != ParticipantConnectionStatus.LEFT:
+                            p.leave()
+                            await self.participant_repo.save(p)
+                            
+                            p_left_event = DomainSessionEvent(
+                                session_id=session_id,
+                                event_type=SessionEventType.PARTICIPANT_LEFT,
+                                metadata={
+                                    "participant_id": str(p.id),
+                                    "role": p.role.value,
+                                    "user_id": p.user_id,
+                                    "left_at": p.left_at.isoformat() if p.left_at else None,
+                                    "reason": f"Session ended because {saved_participant.user_id} left",
+                                },
+                            )
+                            await self.event_repo.save(p_left_event)
+
                 await self.db_session.commit()
                 return saved_participant
 

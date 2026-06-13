@@ -9,9 +9,9 @@ from src.core.exceptions import (
     InvalidStateTransition,
 )
 from src.core.identity import Identity
-from src.domain.models import DomainSession, SessionStatus
+from src.domain.models import DomainSession, SessionStatus, ParticipantConnectionStatus
 from src.domain.events import DomainSessionEvent, SessionEventType
-from src.infrastructure.repositories import SessionRepository, SessionEventRepository
+from src.infrastructure.repositories import SessionRepository, SessionEventRepository, ParticipantRepository
 
 
 class SessionService:
@@ -20,10 +20,13 @@ class SessionService:
         session_repo: SessionRepository,
         event_repo: SessionEventRepository,
         db_session: AsyncSession,
+        participant_repo: Optional[ParticipantRepository] = None,
     ):
         self.session_repo = session_repo
         self.event_repo = event_repo
         self.db_session = db_session
+        self.participant_repo = participant_repo or ParticipantRepository(db_session)
+
 
     async def create_session(self, creator: Identity) -> DomainSession:
         """Create a new session and record the SESSION_CREATED event inside a transaction.
@@ -101,6 +104,27 @@ class SessionService:
                     },
                 )
                 await self.event_repo.save(event)
+
+                # Transition all active participants to LEFT
+                participants = await self.participant_repo.get_by_session_id(session_id)
+                for p in participants:
+                    if p.connection_status != ParticipantConnectionStatus.LEFT:
+                        p.leave()
+                        await self.participant_repo.save(p)
+                        
+                        p_left_event = DomainSessionEvent(
+                            session_id=session_id,
+                            event_type=SessionEventType.PARTICIPANT_LEFT,
+                            metadata={
+                                "participant_id": str(p.id),
+                                "role": p.role.value,
+                                "user_id": p.user_id,
+                                "left_at": p.left_at.isoformat() if p.left_at else None,
+                                "reason": f"Session ended by {initiator.user_id}",
+                            },
+                        )
+                        await self.event_repo.save(p_left_event)
+
                 await self.db_session.commit()
                 return saved_session
             
