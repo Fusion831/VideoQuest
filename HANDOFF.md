@@ -216,14 +216,14 @@ CONNECTED ⇄ DISCONNECTED
 
 **Key service:** `ParticipantService`
 - `join_session(session_id, identity, invite_token)` — handles all join/reconnect cases
-- `leave_session(session_id, participant_id)` — marks LEFT, ends session, marks others LEFT
+- `leave_session(session_id, participant_id)` — marks LEFT, transitions to ABANDONED if no connected participants remain
 - `disconnect_participant(session_id, participant_id)` — marks DISCONNECTED, triggers ABANDONED if all gone
 - `reconnect_participant(session_id, participant_id)` — DISCONNECTED → CONNECTED, restores ACTIVE from ABANDONED
 - `get_session_participants(session_id)`
 
 **Session lifecycle coupling:**
 - `join_session` → CREATED or ABANDONED session transitions to ACTIVE
-- `leave_session` → ends session + marks all remaining participants LEFT
+- `leave_session` → if last CONNECTED participant, session → ABANDONED + Redis TTL set
 - `disconnect_participant` → if last CONNECTED participant, session → ABANDONED + Redis TTL set
 - `reconnect_participant` → if session was ABANDONED, session → ACTIVE + Redis TTL cleared
 

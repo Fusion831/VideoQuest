@@ -240,49 +240,37 @@ class ParticipantService:
                 )
                 pending_broadcasts.append((session_id, payload))
 
-                # Transition session to ENDED when a participant leaves (only if ACTIVE or ABANDONED)
+                # Mark the participant as LEFT in Redis presence immediately
+                redis_presence = RedisPresenceService()
+                await redis_presence.update_presence(str(session_id), str(participant_id), "LEFT")
+
+                # Transition session to ABANDONED when a participant leaves and no connected participants remain
                 session = await self.session_repo.get_by_id(session_id)
-                if session and session.status in (SessionStatus.ACTIVE, SessionStatus.ABANDONED, SessionStatus.CREATED):
-                    session.end()
-                    await self.session_repo.save(session)
-
-                    end_event = DomainSessionEvent(
-                        session_id=session_id,
-                        event_type=SessionEventType.SESSION_ENDED,
-                        metadata={
-                            "ended_by": saved_participant.user_id,
-                            "role": saved_participant.role.value,
-                            "reason": "Participant left the session",
-                        },
-                    )
-                    await self.event_repo.save(end_event)
-                    payload2 = await flush_system_message(self.db_session, session_id, "Support session ended")
-                    pending_broadcasts.append((session_id, payload2))
-
-                    # Mark all other participants as LEFT too
+                if session:
                     all_participants = await self.participant_repo.get_by_session_id(session_id)
-                    for p in all_participants:
-                        if p.id != participant_id and p.connection_status != ParticipantConnectionStatus.LEFT:
-                            p.leave()
-                            await self.participant_repo.save(p)
+                    any_connected = any(p.connection_status == ParticipantConnectionStatus.CONNECTED for p in all_participants)
 
-                            p_left_event = DomainSessionEvent(
-                                session_id=session_id,
-                                event_type=SessionEventType.PARTICIPANT_LEFT,
-                                metadata={
-                                    "participant_id": str(p.id),
-                                    "role": p.role.value,
-                                    "user_id": p.user_id,
-                                    "left_at": p.left_at.isoformat() if p.left_at else None,
-                                    "reason": f"Session ended because {saved_participant.user_id} left",
-                                },
-                            )
-                            await self.event_repo.save(p_left_event)
-                            payload3 = await flush_system_message(
-                                self.db_session, session_id,
-                                f"{p.role.value.title()} {p.user_id} left the session"
-                            )
-                            pending_broadcasts.append((session_id, payload3))
+                    if not any_connected and session.status == SessionStatus.ACTIVE:
+                        session.abandon()
+                        await self.session_repo.save(session)
+
+                        abandon_event = DomainSessionEvent(
+                            session_id=session_id,
+                            event_type=SessionEventType.SESSION_ABANDONED,
+                            metadata={
+                                "disconnected_participant_id": str(saved_participant.id),
+                                "reason": "All participants left or disconnected",
+                            },
+                        )
+                        await self.event_repo.save(abandon_event)
+                        payload2 = await flush_system_message(
+                            self.db_session, session_id,
+                            "Support session abandoned — waiting for reconnect"
+                        )
+                        pending_broadcasts.append((session_id, payload2))
+
+                        # Set abandonment window in Redis (60s grace period)
+                        await redis_presence.set_abandonment_expiry(str(session_id), ttl_seconds=60)
 
                 await self.db_session.commit()
                 # Bug #1 fix: broadcast AFTER commit

@@ -111,14 +111,14 @@ async def test_system_messages_on_lifecycle(db_session: AsyncSession):
     assert "Agent agent_1 joined the session" in contents
     assert "Support session started" in contents
 
-    # Leave agent (ends session)
+    # Leave agent (abandon session)
     await participant_service.leave_session(session.id, agent_participant.id)
     
     messages_after = await chat_service.get_messages(session.id)
     contents_after = [m.content for m in messages_after]
     
     assert "Agent agent_1 left the session" in contents_after
-    assert "Support session ended" in contents_after
+    assert "Support session abandoned — waiting for reconnect" in contents_after
 
 
 @pytest.mark.anyio
