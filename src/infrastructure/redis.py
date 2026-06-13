@@ -17,12 +17,11 @@ def get_redis_client() -> aioredis.Redis:
         try:
             import asyncio
             loop = asyncio.get_running_loop()
-            if _redis_client.connection_pool._loop != loop:
+            if getattr(_redis_client, "_vq_loop", None) != loop:
                 logger.info("Event loop changed, re-initializing Redis connection pool.")
                 _redis_client = None
-        except (RuntimeError, AttributeError):
-            # No running loop or loop check failed, discard client
-            _redis_client = None
+        except RuntimeError:
+            pass
 
     if _redis_client is None:
         logger.info(f"Initializing async Redis connection pool targeting: {settings.REDIS_URL}")
@@ -30,7 +29,15 @@ def get_redis_client() -> aioredis.Redis:
             settings.REDIS_URL,
             encoding="utf-8",
             decode_responses=True,
+            socket_timeout=None,
+            socket_connect_timeout=None,
         )
+        try:
+            import asyncio
+            _redis_client._vq_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _redis_client._vq_loop = None
+            
     return _redis_client
 
 

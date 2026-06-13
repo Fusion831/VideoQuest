@@ -32,6 +32,7 @@ from src.services.participant_service import ParticipantService
 from src.services.chat_service import ChatService
 
 # Real-time infrastructure imports
+from src.core.logging import logger
 from src.infrastructure.database import AsyncSessionLocal
 from src.infrastructure.repositories import SessionRepository, SessionEventRepository, ParticipantRepository, ChatMessageRepository
 from src.infrastructure.redis import RedisPresenceService
@@ -282,6 +283,13 @@ async def websocket_endpoint(
         session_repo = SessionRepository(db_session)
         session = await session_repo.get_by_id(session_id)
         if not session or session.status == SessionStatus.ENDED:
+            status_val = session.status.value if session else "NOT_FOUND"
+            logger.warning(
+                f"Rejected WS connection: session_id={session_id}, participant_id={participant_id}, "
+                f"role=None, session_status={status_val}, "
+                f"reason='Session not found or ended'"
+            )
+            await websocket.accept()
             await websocket.close(code=4000, reason="Invalid or ended session")
             return
 
@@ -308,10 +316,25 @@ async def websocket_endpoint(
         # Check participant
         participant = await participant_repo.get_by_id(participant_id)
         if not participant or participant.session_id != session_id:
+            status_val = session.status.value if session else "UNKNOWN"
+            p_session_id = participant.session_id if participant else None
+            logger.warning(
+                f"Rejected WS connection: session_id={session_id}, participant_id={participant_id}, "
+                f"role=None, session_status={status_val}, "
+                f"reason='Participant not found or session mismatch (p_session_id={p_session_id})'"
+            )
+            await websocket.accept()
             await websocket.close(code=4001, reason="Participant not found")
             return
             
         if participant.connection_status == ParticipantConnectionStatus.LEFT:
+            status_val = session.status.value if session else "UNKNOWN"
+            logger.warning(
+                f"Rejected WS connection: session_id={session_id}, participant_id={participant_id}, "
+                f"role={participant.role.value}, session_status={status_val}, "
+                f"reason='Participant already left'"
+            )
+            await websocket.accept()
             await websocket.close(code=4002, reason="Participant already left")
             return
             

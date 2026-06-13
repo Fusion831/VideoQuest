@@ -127,6 +127,7 @@ export default function SessionRoomPage({ params }: PageProps) {
     ws.onopen = () => {
       console.log('WebSocket connection established.');
       setError(null);
+      refreshRoomData();
     };
 
     ws.onmessage = (event) => {
@@ -164,7 +165,7 @@ export default function SessionRoomPage({ params }: PageProps) {
       ws.close();
       wsRef.current = null;
     };
-  }, [sessionId]); // UX2 fix: only re-run when sessionId changes, not on every participant refresh
+  }, [sessionId, currentParticipantId]); // Connect as participant once currentParticipantId loads
 
   // Set default invite token from fetched session
   useEffect(() => {
