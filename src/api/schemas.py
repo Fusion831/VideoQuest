@@ -9,11 +9,19 @@ class SessionCreateRequest(BaseModel):
     agent_id: str = Field(..., description="ID of the agent initiating the session")
 
 
+class SupportRequestCreate(BaseModel):
+    customer_name: str = Field(..., description="Name of the customer")
+    issue_description: str = Field(..., description="Description of the customer issue")
+
+
 class SessionResponse(BaseModel):
     id: uuid.UUID
     invite_token: str
     status: str
-    agent_id: str
+    agent_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    issue_description: Optional[str] = None
+    video_escalation_status: str
     created_at: datetime
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
@@ -49,6 +57,7 @@ class SessionEventResponse(BaseModel):
 
 class ParticipantJoinRequest(BaseModel):
     invite_token: Optional[str] = Field(None, description="Invite token (required for customer joins)")
+    display_name: Optional[str] = Field(None, description="Display name for customer (required for customer joins)")
 
 
 class ParticipantResponse(BaseModel):

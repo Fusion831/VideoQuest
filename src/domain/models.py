@@ -19,7 +19,7 @@ class SessionStatus(str, Enum):
 class DomainSession:
     def __init__(
         self,
-        agent_id: str,
+        agent_id: Optional[str] = None,
         id: Optional[uuid.UUID] = None,
         invite_token: Optional[str] = None,
         status: Optional[SessionStatus] = None,
@@ -27,6 +27,9 @@ class DomainSession:
         started_at: Optional[datetime] = None,
         ended_at: Optional[datetime] = None,
         updated_at: Optional[datetime] = None,
+        customer_name: Optional[str] = None,
+        issue_description: Optional[str] = None,
+        video_escalation_status: str = "NOT_STARTED",
     ):
         # UUID STRATEGY DOCUMENTATION:
         # We use standard UUIDv4 (uuid.uuid4()) as our globally unique, non-sequential identifier.
@@ -37,6 +40,9 @@ class DomainSession:
         self.invite_token = invite_token or self._generate_invite_token()
         self.status = status or SessionStatus.CREATED
         self.agent_id = agent_id
+        self.customer_name = customer_name
+        self.issue_description = issue_description
+        self.video_escalation_status = video_escalation_status
         
         now = datetime.now(timezone.utc)
         self.created_at = created_at or now

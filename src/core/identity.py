@@ -39,3 +39,16 @@ class Identity:
             return permission in ROLE_PERMISSIONS.get(p_role, set())
         except ValueError:
             return False
+
+@dataclass(frozen=True)
+class AuthenticatedIdentity:
+    """Hardened identity extracted strictly from JWT claims."""
+    user_id: str
+    role: str  # "AGENT", "CUSTOMER"
+
+    def has_permission(self, permission: Permission) -> bool:
+        try:
+            p_role = ParticipantRole(self.role.upper())
+            return permission in ROLE_PERMISSIONS.get(p_role, set())
+        except ValueError:
+            return False

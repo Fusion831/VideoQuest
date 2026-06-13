@@ -2,7 +2,7 @@
 
 import { use, useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { apiClient } from '@/lib/api-client';
 import { Session, Participant, SessionEvent, ChatMessage } from '@/lib/types';
 import ChatPanel from '@/components/ChatPanel';
@@ -14,11 +14,7 @@ interface PageProps {
 
 export default function SessionRoomPage({ params }: PageProps) {
   const { sessionId } = use(params);
-  const searchParams = useSearchParams();
-
-  // URL Query context (to simulate being a specific joined participant)
-  const currentRole = searchParams.get('role') as 'agent' | 'customer' | null;
-  const currentUserId = searchParams.get('userId');
+  const router = useRouter();
 
   const [session, setSession] = useState<Session | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
@@ -26,86 +22,48 @@ export default function SessionRoomPage({ params }: PageProps) {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   
   const [loading, setLoading] = useState(true);
+  const [identityResolved, setIdentityResolved] = useState(false);
+  const [resolvedUserId, setResolvedUserId] = useState<string | null>(null);
+  const [resolvedRole, setResolvedRole] = useState<'agent' | 'customer' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copySuccess, setCopySuccess] = useState(false);
   const [autoJoinAttempted, setAutoJoinAttempted] = useState(false);
+  const [customerDismissedVideoPrompt, setCustomerDismissedVideoPrompt] = useState(false);
+  const [isChatSidebarCollapsed, setIsChatSidebarCollapsed] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
 
   const storedIdentityKey = `vq_identity_${sessionId}`;
 
-  // Resolve identity: URL query params first, then session-specific storage, then global agent auth
-  const [resolvedUserId, setResolvedUserId] = useState<string | null>(() => {
-    if (typeof window === 'undefined') return currentUserId;
-    if (currentRole === 'customer') return currentUserId || 'customer_default';
-    const globalUserId = localStorage.getItem('vq_auth_userId');
-    const globalRole = localStorage.getItem('vq_auth_role');
-    if (globalRole === 'agent' && globalUserId) return globalUserId;
-    const sessionUserId = localStorage.getItem(`${storedIdentityKey}_userId`);
-    return sessionUserId || currentUserId;
-  });
-
-  const [resolvedRole, setResolvedRole] = useState<'agent' | 'customer' | null>(() => {
-    if (typeof window === 'undefined') return currentRole;
-    if (currentRole === 'customer') return 'customer';
-    const globalRole = localStorage.getItem('vq_auth_role') as 'agent' | 'customer' | null;
-    if (globalRole === 'agent') return 'agent';
-    const sessionRole = localStorage.getItem(`${storedIdentityKey}_role`) as 'agent' | 'customer' | null;
-    return sessionRole || currentRole;
-  });
-
-  // Keep state and localStorage in sync & log identity resolution path
+  // Authenticate identity on mount via /auth/me or stored values
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const globalUserId = localStorage.getItem('vq_auth_userId');
-    const globalRole = localStorage.getItem('vq_auth_role') as 'agent' | 'customer' | null;
-    const globalToken = localStorage.getItem('vq_auth_token');
-
-    const sessionUserId = localStorage.getItem(`${storedIdentityKey}_userId`);
-    const sessionRole = localStorage.getItem(`${storedIdentityKey}_role`) as 'agent' | 'customer' | null;
-
-    let finalUserId = resolvedUserId;
-    let finalRole = resolvedRole;
-    let source = 'state defaults';
-
-    if (currentRole === 'customer') {
-      finalUserId = currentUserId || 'customer_default';
-      finalRole = 'customer';
-      source = 'URL query parameters (explicit customer override)';
-    } else if (globalRole === 'agent' && globalUserId) {
-      finalUserId = globalUserId;
-      finalRole = 'agent';
-      source = 'global agent authentication';
-    } else if (sessionUserId && sessionRole) {
-      finalUserId = sessionUserId;
-      finalRole = sessionRole;
-      source = 'session-specific localstorage';
-    } else if (currentUserId && currentRole) {
-      finalUserId = currentUserId;
-      finalRole = currentRole;
-      source = 'URL query parameters';
-    }
-
-    console.log('[IdentityResolution] Path Audit:', {
-      inputs: {
-        global: { user_id: globalUserId, role: globalRole, hasToken: !!globalToken },
-        session: { user_id: sessionUserId, role: sessionRole },
-        query: { user_id: currentUserId, role: currentRole }
-      },
-      resolved: { user_id: finalUserId, role: finalRole },
-      resolvedFrom: source
-    });
-
-    if (finalUserId !== resolvedUserId) setResolvedUserId(finalUserId);
-    if (finalRole !== resolvedRole) setResolvedRole(finalRole);
-
-    // Save identity to session storage (never downgrade agent to customer unless requested explicitly)
-    if (finalUserId && finalRole) {
-      localStorage.setItem(`${storedIdentityKey}_userId`, finalUserId);
-      localStorage.setItem(`${storedIdentityKey}_role`, finalRole);
-    }
-  }, [resolvedUserId, resolvedRole, storedIdentityKey, currentUserId, currentRole]);
+    const checkIdentity = async () => {
+      try {
+        const me = await apiClient.getMe();
+        setResolvedUserId(me.user_id);
+        setResolvedRole(me.role.toLowerCase() as 'agent' | 'customer');
+        setIdentityResolved(true);
+      } catch (err: any) {
+        console.error('[IdentityResolution] Path Audit: Authentication verification failed:', err);
+        // Fallback to localstorage values
+        const localUserId = localStorage.getItem(`${storedIdentityKey}_userId`) || localStorage.getItem('vq_auth_userId');
+        const localRole = localStorage.getItem(`${storedIdentityKey}_role`) || localStorage.getItem('vq_auth_role');
+        if (localUserId && localRole) {
+          setResolvedUserId(localUserId);
+          setResolvedRole(localRole.toLowerCase() as 'agent' | 'customer');
+          setIdentityResolved(true);
+        } else {
+          const globalRole = localStorage.getItem('vq_auth_role');
+          if (globalRole === 'agent') {
+            router.push('/agent/login');
+          } else {
+            setError('Authentication required. Please submit a support request first.');
+          }
+        }
+      }
+    };
+    checkIdentity();
+  }, [sessionId, router, storedIdentityKey]);
 
   // Find current participant ID from the loaded participants list
   const currentParticipant = participants.find(
@@ -139,12 +97,14 @@ export default function SessionRoomPage({ params }: PageProps) {
 
   // Fetch room data on mount, sessionId or resolvedRole change
   useEffect(() => {
-    refreshRoomData();
-  }, [sessionId, resolvedRole]);
+    if (identityResolved && sessionId) {
+      refreshRoomData();
+    }
+  }, [sessionId, resolvedRole, identityResolved]);
 
-  // Self-healing Auto-join flow: Join automatically if resolved identity is present but not in the roster
+  // Auto-join flow
   useEffect(() => {
-    if (loading || !session || session.status === 'ENDED' || autoJoinAttempted) return;
+    if (!identityResolved || loading || !session || session.status === 'ENDED' || autoJoinAttempted) return;
     if (!resolvedUserId || !resolvedRole) return;
 
     const exists = participants.some(
@@ -170,11 +130,11 @@ export default function SessionRoomPage({ params }: PageProps) {
         setError(err.message || 'Auto-join failed');
       });
     }
-  }, [loading, session, participants, resolvedUserId, resolvedRole, sessionId, autoJoinAttempted]);
+  }, [loading, session, participants, resolvedUserId, resolvedRole, sessionId, autoJoinAttempted, identityResolved]);
 
   // Establish real-time WebSocket connection
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || !identityResolved) return;
 
     const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
     let resolvedApiBase = apiBase;
@@ -197,9 +157,17 @@ export default function SessionRoomPage({ params }: PageProps) {
       }
     }
 
+    const token = localStorage.getItem(`vq_session_token_${sessionId}`) || localStorage.getItem('vq_auth_token');
     let wsUrl = `${wsHost}/api/v1/sessions/${sessionId}/ws`;
+    const wsParams = [];
     if (currentParticipantId) {
-      wsUrl += `?participant_id=${currentParticipantId}`;
+      wsParams.push(`participant_id=${currentParticipantId}`);
+    }
+    if (token) {
+      wsParams.push(`token=${encodeURIComponent(token)}`);
+    }
+    if (wsParams.length > 0) {
+      wsUrl += `?${wsParams.join('&')}`;
     }
 
     console.log(`Connecting to WebSocket: ${wsUrl}`);
@@ -224,7 +192,6 @@ export default function SessionRoomPage({ params }: PageProps) {
             if (prev.some((m) => m.id === data.payload.id)) return prev;
             return [...prev, data.payload];
           });
-          // System messages indicate state changes — refresh roster and session
           if (data.payload.message_type === 'SYSTEM') {
             console.log('[WebSocket] SYSTEM message received. Refreshing room data.');
             refreshRoomData();
@@ -237,11 +204,9 @@ export default function SessionRoomPage({ params }: PageProps) {
           eventType === 'PARTICIPANT_DISCONNECTED' ||
           eventType === 'PARTICIPANT_RECONNECTED'
         ) {
-          // Participant lifecycle events — immediately refresh roster
           console.log(`[WebSocket] ${eventType} event received for ${data.payload?.user_id}. Refreshing roster.`);
           refreshRoomData();
         } else {
-          // Unknown/other events — still refresh as safety net
           console.log(`[WebSocket] Unhandled event type: ${eventType}. Refreshing room data.`);
           refreshRoomData();
         }
@@ -265,9 +230,8 @@ export default function SessionRoomPage({ params }: PageProps) {
       ws.close();
       wsRef.current = null;
     };
-  }, [sessionId, currentParticipantId]);
+  }, [sessionId, currentParticipantId, identityResolved]);
 
-  // Copy customer join link to clipboard
   const handleCopyLink = () => {
     if (!session) return;
     const link = `${window.location.origin}/join/${session.invite_token}`;
@@ -302,7 +266,6 @@ export default function SessionRoomPage({ params }: PageProps) {
       setError(null);
       await apiClient.leaveSession(sessionId, pId);
 
-      // If we left as ourselves, clear our local resolved identity
       if (pId === currentParticipantId) {
         setResolvedUserId(null);
         setResolvedRole(null);
@@ -322,7 +285,7 @@ export default function SessionRoomPage({ params }: PageProps) {
     if (!session || !confirm('Are you sure you want to terminate this support session?')) return;
     try {
       setError(null);
-      await apiClient.endSession(sessionId, session.agent_id);
+      await apiClient.endSession(sessionId, session.agent_id || '');
       await refreshRoomData();
     } catch (err: any) {
       setError(err.message || 'Failed to end session');
@@ -342,43 +305,39 @@ export default function SessionRoomPage({ params }: PageProps) {
     }
   };
 
-  if (loading && !session) {
+  if ((loading && !session) || !identityResolved) {
     return (
-      <div className="min-h-screen bg-zinc-950 text-zinc-400 flex flex-col items-center justify-center gap-3">
-        <svg className="w-8 h-8 text-indigo-500 animate-spin" fill="none" viewBox="0 0 24 24">
+      <div className="min-h-screen bg-zinc-955 text-zinc-400 flex flex-col items-center justify-center gap-3">
+        <svg className="w-6 h-6 text-zinc-400 animate-spin" fill="none" viewBox="0 0 24 24">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
         </svg>
-        <span>Synchronizing with session gateway...</span>
+        <span>Connecting to support session...</span>
       </div>
     );
   }
 
   const isAgent = resolvedRole === 'agent';
+  const isVideoActive = session?.video_escalation_status === 'ACTIVE';
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-indigo-500 selection:text-white">
+    <div className="min-h-screen bg-zinc-955 text-zinc-100 font-sans selection:bg-zinc-800 selection:text-white flex flex-col">
       {/* Header */}
-      <header className="border-b border-zinc-850 bg-zinc-900/40 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <header className="border-b border-zinc-850 bg-zinc-900/40 backdrop-blur-md h-16 flex items-center shrink-0">
+        <div className="max-w-7xl mx-auto w-full px-6 flex items-center justify-between">
           <div className="flex items-center gap-3">
             {isAgent && (
               <Link
                 href="/agent"
-                className="p-2 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-200 transition-all"
+                className="p-2 rounded-lg bg-zinc-900 border border-zinc-800 hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-200 transition-all"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
                 </svg>
               </Link>
             )}
-            {!isAgent && (
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-indigo-500 to-violet-500 flex items-center justify-center font-bold text-white shadow-lg">
-                VQ
-              </div>
-            )}
-            <span className="font-semibold text-sm text-zinc-200">
-              {isAgent ? 'Support Session' : 'Support Session'}
+            <span className="font-semibold text-zinc-100">
+              {session?.customer_name ? `Support with ${session.customer_name}` : 'Support Room'}
             </span>
           </div>
 
@@ -386,32 +345,28 @@ export default function SessionRoomPage({ params }: PageProps) {
             {session && (
               <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${
                 session.status === 'ACTIVE' 
-                  ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800/40' 
-                  : session.status === 'ABANDONED'
-                  ? 'bg-amber-950/50 text-amber-400 border border-amber-800/40'
+                  ? 'bg-emerald-950/40 text-emerald-400 border border-emerald-900/40' 
                   : session.status === 'ENDED'
                   ? 'bg-zinc-900 text-zinc-500 border border-zinc-800'
-                  : 'bg-indigo-950/50 text-indigo-400 border border-indigo-800/40'
+                  : 'bg-indigo-950/40 text-indigo-400 border border-indigo-900/40'
               }`}>
-                {session.status === 'ABANDONED' ? '⚠ ABANDONED' : session.status}
+                {session.status === 'CREATED' ? 'WAITING FOR AGENT' : session.status}
               </span>
             )}
-            {isAgent && (
-              <button
-                onClick={refreshRoomData}
-                className="px-3 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-850 text-zinc-400 hover:text-zinc-200 text-xs font-medium transition-all"
-              >
-                Sync Status
-              </button>
-            )}
+            <button
+              onClick={refreshRoomData}
+              className="px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 text-xs font-medium transition-all"
+            >
+              Sync Status
+            </button>
           </div>
         </div>
       </header>
 
-      {/* Main Grid */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {/* Main Area */}
+      <main className="flex-1 max-w-7xl mx-auto w-full px-6 py-6 min-h-0 flex flex-col">
         {error && (
-          <div className="mb-6 p-4 rounded-xl bg-red-950/50 border border-red-800/50 text-red-200 text-sm flex gap-3 items-center">
+          <div className="mb-4 p-4 rounded-xl bg-red-950/25 border border-red-900/30 text-red-400 text-sm flex gap-3 items-center shrink-0">
             <svg className="w-5 h-5 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
@@ -419,210 +374,51 @@ export default function SessionRoomPage({ params }: PageProps) {
           </div>
         )}
 
-        {isAgent ? (
-          /* AGENT VIEW: Two columns layout with event log at the bottom */
-          <div className="space-y-8">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-              {/* Left Column (8 cols): Media Room + Participants Roster */}
-              <div className="lg:col-span-8 space-y-6">
-                {resolvedUserId && resolvedRole ? (
-                  <MediaRoom
-                    sessionId={sessionId}
-                    userId={resolvedUserId}
-                    role={resolvedRole}
-                    sessionStatus={session?.status || 'CREATED'}
-                  />
-                ) : (
-                  <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 text-center text-zinc-500 text-xs">
-                    Initializing local identity...
-                  </div>
-                )}
-
-                {/* Participant Roster */}
-                <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30">
-                  <h3 className="text-sm font-semibold uppercase tracking-wider text-zinc-400 mb-4">
-                    Active Roster
-                  </h3>
-                  
-                  {participants.length === 0 ? (
-                    <div className="py-8 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl bg-zinc-950/25">
-                      No participants registered yet.
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {participants.map((p) => (
-                        <div
-                          key={p.id}
-                          className="p-4 rounded-xl bg-zinc-950 border border-zinc-800 flex flex-col justify-between gap-3"
-                        >
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <div className="font-semibold text-sm text-zinc-200">{p.user_id}</div>
-                              <div className="text-[10px] text-zinc-500 font-medium tracking-wider uppercase mt-0.5">
-                                {p.role}
-                              </div>
-                            </div>
-
-                            <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
-                              p.connection_status === 'CONNECTED'
-                                ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800/40'
-                                : p.connection_status === 'DISCONNECTED'
-                                ? 'bg-amber-950/50 text-amber-400 border border-amber-800/40 animate-pulse'
-                                : 'bg-zinc-900 text-zinc-500 border border-zinc-800'
-                            }`}>
-                              {p.connection_status}
-                            </span>
-                          </div>
-
-                          {session?.status !== 'ENDED' && (
-                            <div className="flex gap-1.5 border-t border-zinc-900 pt-2.5">
-                              {p.connection_status === 'CONNECTED' && (
-                                <>
-                                  <button
-                                    onClick={() => handleDisconnect(p.id)}
-                                    className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-850 text-[10px] font-semibold text-amber-400 transition-all active:scale-95"
-                                  >
-                                    Disconnect
-                                  </button>
-                                  <button
-                                    onClick={() => handleLeave(p.id)}
-                                    className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-850 text-[10px] font-semibold text-red-400 transition-all active:scale-95"
-                                  >
-                                    Leave
-                                  </button>
-                                </>
-                              )}
-                              {p.connection_status === 'DISCONNECTED' && (
-                                <>
-                                  <button
-                                    onClick={() => handleReconnect(p.id)}
-                                    className="flex-1 py-1 rounded bg-indigo-950 hover:bg-indigo-900/30 text-[10px] font-semibold text-indigo-400 border border-indigo-800/30 transition-all active:scale-95"
-                                  >
-                                    Reconnect
-                                  </button>
-                                  <button
-                                    onClick={() => handleLeave(p.id)}
-                                    className="flex-1 py-1 rounded bg-zinc-900 hover:bg-zinc-850 text-[10px] font-semibold text-red-400 transition-all active:scale-95"
-                                  >
-                                    Leave
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
+        {/* Customer Video Escalation Modal */}
+        {!isAgent && session?.video_escalation_status === 'REQUESTED' && !customerDismissedVideoPrompt && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-sm w-full p-6 space-y-6 shadow-2xl">
+              <div className="space-y-2 text-center">
+                <div className="w-12 h-12 rounded-full bg-zinc-800 text-zinc-200 flex items-center justify-center mx-auto text-xl">
+                  📹
                 </div>
+                <h3 className="font-semibold text-lg text-zinc-200">Start Video Call?</h3>
+                <p className="text-xs text-zinc-400 leading-relaxed">
+                  The agent would like to start a video call to assist you better.
+                </p>
               </div>
-
-              {/* Right Column (4 cols): Chat + Session Details */}
-              <div className="lg:col-span-4 space-y-6">
-                <ChatPanel
-                  messages={chatMessages}
-                  participants={participants}
-                  currentParticipantId={currentParticipantId}
-                  sessionStatus={session?.status || 'CREATED'}
-                  onSendMessage={handleSendMessage}
-                />
-
-                {/* Session Metadata */}
-                {session && (
-                  <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30">
-                    <h3 className="text-sm font-semibold uppercase tracking-wider text-zinc-400 mb-4">
-                      Session Details
-                    </h3>
-                    <div className="space-y-3 text-xs">
-                      <div className="flex justify-between py-1 border-b border-zinc-800/40">
-                        <span className="text-zinc-500">Session ID</span>
-                        <span className="font-mono text-zinc-350">{session.id}</span>
-                      </div>
-                      <div className="flex justify-between py-1 border-b border-zinc-800/40">
-                        <span className="text-zinc-500">Assigned Agent</span>
-                        <span className="text-zinc-300">{session.agent_id}</span>
-                      </div>
-                      <div className="flex justify-between py-1 border-b border-zinc-800/40">
-                        <span className="text-zinc-500">Invite Token</span>
-                        <span className="font-mono text-zinc-400">{session.invite_token}</span>
-                      </div>
-                      <div className="flex justify-between py-1">
-                        <span className="text-zinc-500">Created At</span>
-                        <span className="text-zinc-400">{new Date(session.created_at).toLocaleString()}</span>
-                      </div>
-                    </div>
-
-                    {session.status !== 'ENDED' && (
-                      <div className="mt-6 flex gap-2">
-                        <button
-                          onClick={handleCopyLink}
-                          className="flex-1 py-2 px-3 rounded-lg bg-indigo-950/60 hover:bg-indigo-900/40 text-indigo-400 border border-indigo-800/40 text-xs font-semibold flex items-center justify-center gap-2 transition-all active:scale-95"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-                          </svg>
-                          {copySuccess ? 'Copied Link!' : 'Invite Customer'}
-                        </button>
-                        <button
-                          onClick={handleEndSession}
-                          className="py-2 px-4 rounded-lg bg-red-950/40 hover:bg-red-900/30 text-red-400 border border-red-900/30 text-xs font-semibold transition-all active:scale-95"
-                        >
-                          End Session
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
+              <div className="flex gap-3">
+                <button
+                  onClick={async () => {
+                    try {
+                      setError(null);
+                      await apiClient.acceptVideo(sessionId);
+                      await refreshRoomData();
+                    } catch (err: any) {
+                      setError(err.message || 'Failed to accept video call');
+                    }
+                  }}
+                  className="flex-1 py-2 rounded-xl bg-zinc-100 hover:bg-zinc-200 text-zinc-900 font-medium text-xs transition-all active:scale-[0.98]"
+                >
+                  Join Video Call
+                </button>
+                <button
+                  onClick={() => {
+                    setCustomerDismissedVideoPrompt(true);
+                  }}
+                  className="flex-1 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-750 text-zinc-300 font-medium text-xs transition-all"
+                >
+                  Continue Chat
+                </button>
               </div>
             </div>
-
-            {/* Collapsible Session Event Log (Agent-Only) */}
-            <details className="group border border-zinc-850 rounded-2xl bg-zinc-900 shadow-xl shadow-black/45 overflow-hidden">
-              <summary className="p-6 cursor-pointer select-none flex items-center justify-between font-semibold text-sm uppercase tracking-wider text-zinc-400 hover:bg-zinc-800/40 transition-all">
-                <span className="flex items-center gap-2.5">
-                  <svg className="w-4 h-4 text-zinc-500 group-open:rotate-90 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
-                  </svg>
-                  Session Event Log
-                </span>
-                <span className="text-[10px] bg-zinc-950 px-2 py-0.5 rounded text-zinc-500 font-mono">
-                  {events.length} events
-                </span>
-              </summary>
-              <div className="px-6 pb-6 pt-2">
-                <div className="rounded-xl bg-zinc-950 border border-zinc-850 p-4 max-h-[300px] overflow-y-auto font-mono text-[11px] leading-relaxed space-y-3 scrollbar-thin">
-                  {events.length === 0 ? (
-                    <div className="text-center text-zinc-700 py-6">
-                      No session events recorded yet.
-                    </div>
-                  ) : (
-                    events.map((event) => (
-                      <div key={event.id} className="pb-2.5 border-b border-zinc-900/40 last:border-0 last:pb-0">
-                        <div className="flex justify-between items-center text-zinc-500">
-                          <span className="text-indigo-400 font-semibold">{event.event_type}</span>
-                          <span>{new Date(event.timestamp).toLocaleTimeString()}</span>
-                        </div>
-                        <div className="mt-1 text-zinc-400">
-                          {event.metadata && Object.keys(event.metadata).length > 0 ? (
-                            <pre className="p-2 rounded bg-zinc-900/40 text-zinc-400 overflow-x-auto whitespace-pre-wrap">
-                              {JSON.stringify(event.metadata)}
-                            </pre>
-                          ) : (
-                            <span className="italic text-zinc-650">No metadata payload</span>
-                          )}
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </details>
           </div>
-        ) : (
-          /* CUSTOMER VIEW: Media Room + Participants Roster (Left), Chat (Right) - No admin controls */
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-            {/* Left Column (8 cols): Media Room + Participants Roster */}
-            <div className="lg:col-span-8 space-y-6">
+        )}
+
+        {isVideoActive ? (
+          /* ACTIVE CALL LAYOUT: 80% video / 20% chat sidebar */
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1 min-h-0">
+            <div className={`${isChatSidebarCollapsed ? 'lg:col-span-12' : 'lg:col-span-9'} flex flex-col min-h-0 relative`}>
               {resolvedUserId && resolvedRole ? (
                 <MediaRoom
                   sessionId={sessionId}
@@ -631,64 +427,202 @@ export default function SessionRoomPage({ params }: PageProps) {
                   sessionStatus={session?.status || 'CREATED'}
                 />
               ) : (
-                <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 text-center text-zinc-500 text-xs">
-                  Initializing secure video stream...
+                <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800 text-center text-zinc-500 text-xs flex-1 flex items-center justify-center">
+                  Connecting to video call...
                 </div>
               )}
+              
+              <button
+                onClick={() => setIsChatSidebarCollapsed(!isChatSidebarCollapsed)}
+                className="absolute top-4 right-4 z-20 px-3 py-1.5 rounded-lg bg-zinc-900/90 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 text-xs font-medium backdrop-blur-sm shadow-md transition-all"
+              >
+                {isChatSidebarCollapsed ? '💬 Show Chat' : '✕ Hide Chat'}
+              </button>
+            </div>
 
-              {/* Participant Roster */}
-              <div className="p-6 rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-zinc-400 mb-4">
-                  Active Roster
+            {!isChatSidebarCollapsed && (
+              <div className="lg:col-span-3 flex flex-col min-h-0">
+                <ChatPanel
+                  messages={chatMessages}
+                  participants={participants}
+                  currentParticipantId={currentParticipantId}
+                  sessionStatus={session?.status || 'CREATED'}
+                  onSendMessage={handleSendMessage}
+                  className="flex-1"
+                />
+              </div>
+            )}
+          </div>
+        ) : (
+          /* PRE-VIDEO CHAT-FIRST LAYOUT */
+          <div className="max-w-2xl mx-auto w-full space-y-6 flex-1 flex flex-col justify-center">
+            {session?.status === 'CREATED' && !session?.agent_id && (
+              <div className="p-5 rounded-2xl bg-zinc-900/50 border border-zinc-850 text-center space-y-2">
+                <div className="w-8 h-8 rounded-full bg-zinc-800 text-zinc-300 flex items-center justify-center mx-auto animate-pulse">
+                  💬
+                </div>
+                <h3 className="font-semibold text-sm text-zinc-200">Waiting for agent to accept...</h3>
+                <p className="text-xs text-zinc-500 leading-relaxed max-w-sm mx-auto">
+                  Your support request is in queue. A support representative will claim your request shortly.
+                </p>
+              </div>
+            )}
+
+            {!isAgent && session?.video_escalation_status === 'REQUESTED' && customerDismissedVideoPrompt && (
+              <div className="p-4 bg-indigo-950/20 border border-indigo-900/30 rounded-2xl flex items-center justify-between gap-4 text-xs shadow-lg">
+                <div className="space-y-0.5">
+                  <span className="text-indigo-300 font-semibold block">Video Call Requested</span>
+                  <span className="text-[11px] text-zinc-400">The agent would like to start a video call.</span>
+                </div>
+                <button
+                  onClick={async () => {
+                    try {
+                      setError(null);
+                      await apiClient.acceptVideo(sessionId);
+                      await refreshRoomData();
+                    } catch (err: any) {
+                      setError(err.message || 'Failed to accept video call');
+                    }
+                  }}
+                  className="px-4 py-2 bg-zinc-100 hover:bg-zinc-200 text-zinc-900 rounded-xl font-medium transition-all active:scale-95 shrink-0"
+                >
+                  Join Call
+                </button>
+              </div>
+            )}
+
+            <ChatPanel
+              messages={chatMessages}
+              participants={participants}
+              currentParticipantId={currentParticipantId}
+              sessionStatus={session?.status || 'CREATED'}
+              onSendMessage={handleSendMessage}
+              className="h-[500px] flex-none"
+            />
+
+            {/* Agent pre-video Controls */}
+            {isAgent && (
+              <div className="p-6 rounded-2xl bg-zinc-900/40 border border-zinc-850 space-y-4">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
+                  Agent Actions
                 </h3>
-                
-                {participants.length === 0 ? (
-                  <div className="py-8 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl bg-zinc-950/25">
-                    No participants registered yet.
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {participants.map((p) => (
-                      <div
-                        key={p.id}
-                        className="p-4 rounded-xl bg-zinc-950 border border-zinc-800 flex flex-col justify-between gap-3"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <div className="font-semibold text-sm text-zinc-200">{p.user_id}</div>
-                            <div className="text-[10px] text-zinc-500 font-medium tracking-wider uppercase mt-0.5">
-                              {p.role}
-                            </div>
-                          </div>
+                <div className="flex gap-3">
+                  {session?.video_escalation_status === 'NOT_STARTED' ? (
+                    <button
+                      onClick={async () => {
+                        try {
+                          setError(null);
+                          await apiClient.requestVideo(sessionId);
+                          await refreshRoomData();
+                        } catch (err: any) {
+                          setError(err.message || 'Failed to request video call');
+                        }
+                      }}
+                      className="flex-1 py-2.5 rounded-xl bg-zinc-100 hover:bg-zinc-200 text-zinc-900 font-medium text-xs transition-all active:scale-[0.98]"
+                    >
+                      📹 Start Video Call
+                    </button>
+                  ) : (
+                    <button
+                      disabled
+                      className="flex-1 py-2.5 rounded-xl bg-zinc-800 text-zinc-500 font-medium text-xs cursor-not-allowed"
+                    >
+                      ⏳ Video Requested (Waiting for Customer...)
+                    </button>
+                  )}
+                  <button
+                    onClick={handleEndSession}
+                    className="flex-1 py-2.5 rounded-xl bg-red-950/20 hover:bg-red-900/30 text-red-400 border border-red-900/30 font-medium text-xs transition-all active:scale-[0.98]"
+                  >
+                    End Support Session
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
-                          <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
-                            p.connection_status === 'CONNECTED'
-                              ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800/40'
-                              : p.connection_status === 'DISCONNECTED'
-                              ? 'bg-amber-950/50 text-amber-400 border border-amber-800/40 animate-pulse'
-                              : 'bg-zinc-900 text-zinc-500 border border-zinc-800'
-                          }`}>
-                            {p.connection_status}
-                          </span>
-                        </div>
+        {/* Collapsible Session Event Log (Agent-Only) */}
+        {isAgent && (
+          <details className="group border border-zinc-850 rounded-2xl bg-zinc-900/20 shadow-xl overflow-hidden mt-6">
+            <summary className="p-4 cursor-pointer select-none flex items-center justify-between font-semibold text-xs uppercase tracking-wider text-zinc-400 hover:bg-zinc-900/40 transition-all">
+              <span className="flex items-center gap-2.5">
+                <svg className="w-3.5 h-3.5 text-zinc-500 group-open:rotate-90 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                </svg>
+                Developer Tools / Session Diagnostics
+              </span>
+              <span className="text-[10px] bg-zinc-950 px-2 py-0.5 rounded text-zinc-500 font-mono">
+                {events.length} events
+              </span>
+            </summary>
+            <div className="p-4 space-y-4">
+              {/* Session details metadata */}
+              {session && (
+                <div className="grid grid-cols-2 gap-4 text-xs border-b border-zinc-850 pb-4">
+                  <div><span className="text-zinc-500">Session ID:</span> <span className="font-mono text-zinc-300">{session.id}</span></div>
+                  <div><span className="text-zinc-500">Assigned Agent:</span> <span className="text-zinc-300">{session.agent_id}</span></div>
+                  <div><span className="text-zinc-500">Invite Token:</span> <span className="font-mono text-zinc-400">{session.invite_token}</span></div>
+                  <div><span className="text-zinc-500">Created At:</span> <span className="text-zinc-400">{new Date(session.created_at).toLocaleString()}</span></div>
+                </div>
+              )}
+              
+              {/* Roster list */}
+              <div className="space-y-2">
+                <h4 className="font-semibold text-xs uppercase tracking-wider text-zinc-500">Active Roster</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {participants.map((p) => (
+                    <div key={p.id} className="p-3 rounded-xl bg-zinc-950 border border-zinc-850 flex items-center justify-between text-xs">
+                      <div>
+                        <div className="font-semibold text-zinc-300">{p.user_id} ({p.role})</div>
+                        <div className="text-[10px] text-zinc-500">{p.connection_status}</div>
                       </div>
-                    ))}
-                  </div>
-                )}
+                      {session?.status !== 'ENDED' && (
+                        <div className="flex gap-1.5">
+                          {p.connection_status === 'CONNECTED' && (
+                            <>
+                              <button onClick={() => handleDisconnect(p.id)} className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] text-amber-400 transition-all">Disconnect</button>
+                              <button onClick={() => handleLeave(p.id)} className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] text-red-400 transition-all">Leave</button>
+                            </>
+                          )}
+                          {p.connection_status === 'DISCONNECTED' && (
+                            <>
+                              <button onClick={() => handleReconnect(p.id)} className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] text-indigo-400 transition-all">Reconnect</button>
+                              <button onClick={() => handleLeave(p.id)} className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-[10px] text-red-400 transition-all">Leave</button>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Event logging */}
+              <div className="space-y-2">
+                <h4 className="font-semibold text-xs uppercase tracking-wider text-zinc-500">Event Logs</h4>
+                <div className="rounded-xl bg-zinc-950 border border-zinc-850 p-3 max-h-[200px] overflow-y-auto font-mono text-[10px] leading-relaxed space-y-2 scrollbar-thin">
+                  {events.length === 0 ? (
+                    <div className="text-center text-zinc-700 py-4 italic">No events recorded.</div>
+                  ) : (
+                    events.map((event) => (
+                      <div key={event.id} className="pb-2 border-b border-zinc-900/40 last:border-0 last:pb-0">
+                        <div className="flex justify-between items-center text-zinc-500">
+                          <span className="text-zinc-400 font-semibold">{event.event_type}</span>
+                          <span>{new Date(event.timestamp).toLocaleTimeString()}</span>
+                        </div>
+                        {event.metadata && Object.keys(event.metadata).length > 0 && (
+                          <pre className="mt-1 p-1.5 rounded bg-zinc-900/40 text-zinc-400 overflow-x-auto whitespace-pre-wrap">
+                            {JSON.stringify(event.metadata)}
+                          </pre>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             </div>
-
-            {/* Right Column (4 cols): Chat Panel */}
-            <div className="lg:col-span-4">
-              <ChatPanel
-                messages={chatMessages}
-                participants={participants}
-                currentParticipantId={currentParticipantId}
-                sessionStatus={session?.status || 'CREATED'}
-                onSendMessage={handleSendMessage}
-              />
-            </div>
-          </div>
+          </details>
         )}
       </main>
     </div>

@@ -144,3 +144,58 @@ async def test_api_session_history_and_events(client):
     assert len(events) == 2
     assert events[0]["event_type"] == "SESSION_CREATED"
     assert events[1]["event_type"] == "SESSION_ENDED"
+
+
+async def test_api_support_request_workflow(client):
+    """Test support request creation, agent acceptance, and video escalation lifecycle."""
+    # 1. Create support request as customer
+    req_payload = {
+        "customer_name": "Alice Smith",
+        "issue_description": "My stream is lagging",
+    }
+    headers_customer = {
+        "X-User-ID": "alice_customer",
+        "X-User-Role": "customer",
+    }
+    response = await client.post("/api/v1/sessions/request", json=req_payload, headers=headers_customer)
+    assert response.status_code == 201
+    res_data = response.json()
+    assert "token" in res_data
+    session_data = res_data["session"]
+    assert session_data["customer_name"] == "Alice Smith"
+    assert session_data["issue_description"] == "My stream is lagging"
+    assert session_data["agent_id"] is None
+    assert session_data["status"] == "CREATED"
+    assert session_data["video_escalation_status"] == "NOT_STARTED"
+    
+    session_id = session_data["id"]
+
+    # 2. Try to request video escalation before agent accepts (should fail or not be allowed yet)
+    # Actually request video is restricted to the assigned agent or any agent, but here the agent is not assigned yet
+    headers_agent = {
+        "X-User-ID": "agent_bob",
+        "X-User-Role": "agent",
+    }
+    req_video_res = await client.post(f"/api/v1/sessions/{session_id}/request-video", headers=headers_agent)
+    assert req_video_res.status_code == 403
+
+    # 3. Agent accepts the session
+    accept_payload = {"agent_id": "agent_bob"}
+    accept_res = await client.post(f"/api/v1/sessions/{session_id}/accept", json=accept_payload, headers=headers_agent)
+    assert accept_res.status_code == 200
+    session_data = accept_res.json()
+    assert session_data["agent_id"] == "agent_bob"
+    assert session_data["status"] == "ACTIVE"
+
+    # 4. Agent requests video escalation
+    req_video_res = await client.post(f"/api/v1/sessions/{session_id}/request-video", headers=headers_agent)
+    assert req_video_res.status_code == 200
+    session_data = req_video_res.json()
+    assert session_data["video_escalation_status"] == "REQUESTED"
+
+    # 5. Customer accepts video escalation
+    accept_video_res = await client.post(f"/api/v1/sessions/{session_id}/accept-video", headers=headers_customer)
+    assert accept_video_res.status_code == 200
+    session_data = accept_video_res.json()
+    assert session_data["video_escalation_status"] == "ACTIVE"
+

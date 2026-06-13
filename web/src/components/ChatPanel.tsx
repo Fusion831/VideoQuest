@@ -7,6 +7,7 @@ interface ChatPanelProps {
   currentParticipantId: string | null;
   sessionStatus: 'CREATED' | 'ACTIVE' | 'ABANDONED' | 'ENDED';
   onSendMessage: (content: string) => void;
+  className?: string;
 }
 
 export default function ChatPanel({
@@ -15,6 +16,7 @@ export default function ChatPanel({
   currentParticipantId,
   sessionStatus,
   onSendMessage,
+  className = "h-[500px]",
 }: ChatPanelProps) {
   const [inputText, setInputText] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -44,7 +46,7 @@ export default function ChatPanel({
   };
 
   return (
-    <div className="flex flex-col h-[500px] rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30 overflow-hidden">
+    <div className={`flex flex-col rounded-2xl bg-zinc-900 border border-zinc-800/80 shadow-xl shadow-black/30 overflow-hidden ${className}`}>
       {/* Header */}
       <div className="px-6 py-4 border-b border-zinc-800/80 bg-zinc-900/50 flex items-center justify-between">
         <h3 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">

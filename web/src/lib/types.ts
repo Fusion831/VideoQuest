@@ -2,7 +2,10 @@ export interface Session {
   id: string;
   invite_token: string;
   status: 'CREATED' | 'ACTIVE' | 'ABANDONED' | 'ENDED';
-  agent_id: string;
+  agent_id: string | null;
+  customer_name: string | null;
+  issue_description: string | null;
+  video_escalation_status: 'NOT_STARTED' | 'REQUESTED' | 'ACTIVE';
   created_at: string;
   started_at: string | null;
   ended_at: string | null;

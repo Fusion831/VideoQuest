@@ -60,14 +60,32 @@ def get_chat_service(
     )
 
 
-def get_current_identity(
-    x_user_id: Optional[str] = Header(None, alias="X-User-ID"),
-    x_user_role: Optional[str] = Header(None, alias="X-User-Role"),
-) -> Identity:
-    """Dependency extracting the lightweight Identity from transport headers."""
-    user_id = x_user_id or "anonymous"
-    role = x_user_role or "customer"
-    return Identity(user_id=user_id, role=role.upper())
+from fastapi import Header, HTTPException, status
+from src.core.auth import decode_jwt
+from src.core.identity import AuthenticatedIdentity
+
+async def get_current_identity(
+    authorization: Optional[str] = Header(None),
+) -> AuthenticatedIdentity:
+    """Dependency extracting the lightweight Identity from the Authorization header JWT."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return AuthenticatedIdentity(user_id="anonymous", role="anonymous")
+
+    token = authorization.split(" ")[1]
+    payload = decode_jwt(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired authentication token"
+        )
+    user_id = payload.get("sub")
+    role = payload.get("role")
+    if not user_id or not role:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token claims"
+        )
+    return AuthenticatedIdentity(user_id=user_id, role=role.upper())
 
 
 

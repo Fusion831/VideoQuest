@@ -29,35 +29,24 @@ async function fetchJson<T>(
     headers.set('Content-Type', 'application/json');
   }
 
-  // Auto-attach stored credentials if available in browser
+  // Auto-attach stored Bearer token if available in browser
   if (typeof window !== 'undefined') {
-    // 1. Resolve session-specific identity if url matches a session path
+    // 1. Resolve session-specific token if url matches a session path
     const sessionMatch = url.match(/\/sessions\/([a-f0-9-]+)/i);
-    let resolvedUserId: string | null = null;
-    let resolvedRole: string | null = null;
+    let token: string | null = null;
     
     if (sessionMatch) {
       const sessionId = sessionMatch[1];
-      resolvedUserId = localStorage.getItem(`vq_identity_${sessionId}_userId`);
-      resolvedRole = localStorage.getItem(`vq_identity_${sessionId}_role`);
+      token = localStorage.getItem(`vq_session_token_${sessionId}`);
     }
     
-    // 2. Fall back to global authenticated agent identity
-    if (!resolvedUserId || !resolvedRole) {
-      resolvedUserId = localStorage.getItem('vq_auth_userId');
-      resolvedRole = localStorage.getItem('vq_auth_role');
+    // 2. Fall back to global authenticated agent token
+    if (!token) {
+      token = localStorage.getItem('vq_auth_token');
     }
     
-    if (resolvedUserId && !headers.has('X-User-ID')) {
-      headers.set('X-User-ID', resolvedUserId);
-    }
-    if (resolvedRole && !headers.has('X-User-Role')) {
-      headers.set('X-User-Role', resolvedRole.toUpperCase());
-    }
-    
-    const savedToken = localStorage.getItem('vq_auth_token');
-    if (savedToken && !headers.has('Authorization')) {
-      headers.set('Authorization', `Bearer ${savedToken}`);
+    if (token && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${token}`);
     }
   }
 
@@ -94,6 +83,10 @@ export const apiClient = {
     return res;
   },
 
+  async getMe(): Promise<{ user_id: string; role: string }> {
+    return fetchJson<{ user_id: string; role: string }>('/auth/me');
+  },
+
   /**
    * Sessions
    */
@@ -104,8 +97,45 @@ export const apiClient = {
     });
   },
 
-  async getSessions(status?: string): Promise<SessionListResponse> {
-    const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  async createSupportRequest(
+    customerName: string,
+    issueDescription: string
+  ): Promise<{ session: Session; participant: Participant; token: string }> {
+    const res = await fetchJson<{ session: Session; participant: Participant; token: string }>('/sessions/request', {
+      method: 'POST',
+      body: JSON.stringify({ customer_name: customerName, issue_description: issueDescription }),
+    });
+    if (typeof window !== 'undefined' && res.token) {
+      localStorage.setItem(`vq_session_token_${res.session.id}`, res.token);
+      localStorage.setItem(`vq_identity_${res.session.id}_userId`, res.participant.user_id);
+      localStorage.setItem(`vq_identity_${res.session.id}_role`, res.participant.role.toLowerCase());
+    }
+    return res;
+  },
+
+  async acceptSession(sessionId: string): Promise<Session> {
+    return fetchJson<Session>(`/sessions/${sessionId}/accept`, {
+      method: 'POST',
+    });
+  },
+
+  async requestVideo(sessionId: string): Promise<Session> {
+    return fetchJson<Session>(`/sessions/${sessionId}/request-video`, {
+      method: 'POST',
+    });
+  },
+
+  async acceptVideo(sessionId: string): Promise<Session> {
+    return fetchJson<Session>(`/sessions/${sessionId}/accept-video`, {
+      method: 'POST',
+    });
+  },
+
+  async getSessions(status?: string, unassigned?: boolean): Promise<SessionListResponse> {
+    const params = new URLSearchParams();
+    if (status) params.append('status', status);
+    if (unassigned !== undefined) params.append('unassigned', unassigned.toString());
+    const query = params.toString() ? `?${params.toString()}` : '';
     return fetchJson<SessionListResponse>(`/sessions/${query}`);
   },
 
@@ -116,10 +146,6 @@ export const apiClient = {
   async endSession(sessionId: string, agentId: string): Promise<Session> {
     return fetchJson<Session>(`/sessions/${sessionId}/end`, {
       method: 'POST',
-      headers: {
-        'X-User-ID': agentId,
-        'X-User-Role': 'agent',
-      },
     });
   },
 
@@ -139,18 +165,27 @@ export const apiClient = {
    */
   async joinSession(
     sessionId: string,
-    userId: string,
+    displayName: string,
     role: 'agent' | 'customer',
     inviteToken?: string
-  ): Promise<Participant> {
-    return fetchJson<Participant>(`/sessions/${sessionId}/participants/join`, {
+  ): Promise<Participant & { token?: string }> {
+    const body = role === 'agent'
+      ? { invite_token: inviteToken }
+      : { invite_token: inviteToken, display_name: displayName };
+
+    const res = await fetchJson<Participant & { token?: string }>(`/sessions/${sessionId}/participants/join`, {
       method: 'POST',
-      body: JSON.stringify({ invite_token: inviteToken }),
-      headers: {
-        'X-User-ID': userId,
-        'X-User-Role': role,
-      },
+      body: JSON.stringify(body),
     });
+
+    if (typeof window !== 'undefined') {
+      if (res.token) {
+        localStorage.setItem(`vq_session_token_${sessionId}`, res.token);
+      }
+      localStorage.setItem(`vq_identity_${sessionId}_userId`, res.user_id);
+      localStorage.setItem(`vq_identity_${sessionId}_role`, res.role.toLowerCase());
+    }
+    return res;
   },
 
   async leaveSession(
@@ -200,10 +235,6 @@ export const apiClient = {
       `/sessions/${sessionId}/livekit-token`,
       {
         method: 'GET',
-        headers: {
-          'X-User-ID': userId,
-          'X-User-Role': role,
-        },
       }
     );
   },

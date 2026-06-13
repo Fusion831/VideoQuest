@@ -66,7 +66,7 @@ export default function CustomerJoinPage({ params }: PageProps) {
       localStorage.setItem(`vq_identity_${sessionId}_role`, 'customer');
       
       // Navigate to the session room page
-      router.push(`/session/${sessionId}?role=customer&userId=${encodeURIComponent(customerId)}`);
+      router.push(`/session/${sessionId}`);
     } catch (err: any) {
       setError(err.message || 'Failed to join session');
     } finally {

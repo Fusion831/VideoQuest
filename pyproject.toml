@@ -18,4 +18,5 @@ dependencies = [
     "uvicorn>=0.49.0",
     "websockets>=14.0",
     "livekit-api",
+    "pyjwt>=2.13.0",
 ]

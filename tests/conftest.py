@@ -53,7 +53,28 @@ async def client(db_session) -> AsyncGenerator[AsyncClient, None]:
     async def override_get_db_session():
         yield db_session
 
+    from fastapi import Header
+    from typing import Optional
+    from src.api.dependencies import get_current_identity
+    from src.core.identity import AuthenticatedIdentity
+    from src.core.auth import decode_jwt
+
+    async def override_get_current_identity(
+        authorization: Optional[str] = Header(None),
+        x_user_id: Optional[str] = Header(None, alias="X-User-ID"),
+        x_user_role: Optional[str] = Header(None, alias="X-User-Role"),
+    ) -> AuthenticatedIdentity:
+        if authorization and authorization.startswith("Bearer "):
+            token = authorization.split(" ")[1]
+            payload = decode_jwt(token)
+            if payload:
+                return AuthenticatedIdentity(user_id=payload.get("sub"), role=payload.get("role").upper())
+        user_id = x_user_id or "agent_1"
+        role = x_user_role or "agent"
+        return AuthenticatedIdentity(user_id=user_id, role=role.upper())
+
     app.dependency_overrides[get_db_session] = override_get_db_session
+    app.dependency_overrides[get_current_identity] = override_get_current_identity
     
     # Using the standard ASGITransport for HTTPX in-memory API calls
     async with AsyncClient(

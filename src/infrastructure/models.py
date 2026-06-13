@@ -64,7 +64,10 @@ class SessionORM(Base):
     id = Column(GUID, primary_key=True, default=uuid.uuid4)
     invite_token = Column(String(255), unique=True, nullable=False, index=True)
     status = Column(String(50), nullable=False, default=SessionStatus.CREATED.value)
-    agent_id = Column(String(255), nullable=False)
+    agent_id = Column(String(255), nullable=True)
+    customer_name = Column(String(255), nullable=True)
+    issue_description = Column(String, nullable=True)
+    video_escalation_status = Column(String(50), nullable=False, default="NOT_STARTED")
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
     started_at = Column(DateTime(timezone=True), nullable=True)
     ended_at = Column(DateTime(timezone=True), nullable=True)
@@ -80,6 +83,9 @@ class SessionORM(Base):
             started_at=self.started_at.replace(tzinfo=timezone.utc) if self.started_at else None,
             ended_at=self.ended_at.replace(tzinfo=timezone.utc) if self.ended_at else None,
             updated_at=self.updated_at.replace(tzinfo=timezone.utc) if self.updated_at else None,
+            customer_name=self.customer_name,
+            issue_description=self.issue_description,
+            video_escalation_status=self.video_escalation_status,
         )
 
     @classmethod
@@ -93,6 +99,9 @@ class SessionORM(Base):
             started_at=domain.started_at,
             ended_at=domain.ended_at,
             updated_at=domain.updated_at,
+            customer_name=domain.customer_name,
+            issue_description=domain.issue_description,
+            video_escalation_status=domain.video_escalation_status,
         )
 
 

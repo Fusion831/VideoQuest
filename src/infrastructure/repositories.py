@@ -35,13 +35,18 @@ class SessionRepository:
         return orm_session.to_domain() if orm_session else None
 
     async def list_sessions(
-        self, limit: int = 20, offset: int = 0, status: Optional[str] = None
+        self, limit: int = 20, offset: int = 0, status: Optional[str] = None, unassigned: Optional[bool] = None
     ) -> Tuple[List[DomainSession], int]:
         """Retrieve a list of sessions, filtered by status, and return total count."""
         # Query total count
         count_stmt = select(func.count(SessionORM.id))
         if status:
             count_stmt = count_stmt.where(SessionORM.status == status)
+        if unassigned is not None:
+            if unassigned:
+                count_stmt = count_stmt.where(SessionORM.agent_id.is_(None))
+            else:
+                count_stmt = count_stmt.where(SessionORM.agent_id.is_not(None))
         count_result = await self.db_session.execute(count_stmt)
         total = count_result.scalar_one()
 
@@ -49,6 +54,11 @@ class SessionRepository:
         list_stmt = select(SessionORM)
         if status:
             list_stmt = list_stmt.where(SessionORM.status == status)
+        if unassigned is not None:
+            if unassigned:
+                list_stmt = list_stmt.where(SessionORM.agent_id.is_(None))
+            else:
+                list_stmt = list_stmt.where(SessionORM.agent_id.is_not(None))
         list_stmt = list_stmt.order_by(SessionORM.created_at.desc()).offset(offset).limit(limit)
         
         list_result = await self.db_session.execute(list_stmt)

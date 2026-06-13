@@ -18,8 +18,29 @@ async def lifespan(app: FastAPI):
     # Startup actions
     setup_logging()
     logger.info("Initializing database tables...")
+    from sqlalchemy import text
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        
+        # Ensure new columns exist in sessions table for existing databases
+        for col_name, col_type in [
+            ("customer_name", "VARCHAR(255)"),
+            ("issue_description", "TEXT"),
+            ("video_escalation_status", "VARCHAR(50) DEFAULT 'NOT_STARTED'")
+        ]:
+            try:
+                await conn.execute(text(f"ALTER TABLE sessions ADD COLUMN {col_name} {col_type}"))
+                logger.info(f"Dynamically added column {col_name} to sessions table.")
+            except Exception:
+                # Column probably already exists or we are running in SQLite where ADD COLUMN has different constraints
+                pass
+
+        # Also make agent_id nullable in sessions table
+        try:
+            await conn.execute(text("ALTER TABLE sessions ALTER COLUMN agent_id DROP NOT NULL"))
+            logger.info("Made agent_id column in sessions table nullable.")
+        except Exception:
+            pass
     logger.info("Database tables initialized.")
     
     # Start background lifecycle monitor

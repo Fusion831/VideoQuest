@@ -89,7 +89,7 @@ class ChatService:
 
 
 
-async def flush_system_message(db_session, session_id: uuid.UUID, content: str) -> dict:
+async def flush_system_message(db_session, session_id: uuid.UUID, content: str, metadata: Optional[dict] = None) -> dict:
     """Flush a SYSTEM chat message within the current open transaction.
     
     Returns the broadcast payload. The caller MUST fire broadcast_system_message_payload()
@@ -100,6 +100,7 @@ async def flush_system_message(db_session, session_id: uuid.UUID, content: str) 
         session_id=session_id,
         content=content,
         message_type=ChatMessageType.SYSTEM,
+        metadata=metadata,
     )
     saved = await msg_repo.save(msg)  # flush only, no commit
     return {

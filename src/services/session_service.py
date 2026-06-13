@@ -60,6 +60,122 @@ class SessionService:
             await self.db_session.rollback()
             raise
 
+    async def create_support_request(self, customer_name: str, issue_description: str) -> DomainSession:
+        """Create a new support request session without an assigned agent."""
+        try:
+            session = DomainSession(
+                agent_id=None,
+                status=SessionStatus.CREATED,
+                customer_name=customer_name,
+                issue_description=issue_description
+            )
+            saved_session = await self.session_repo.save(session)
+
+            # Record creation event
+            event = DomainSessionEvent(
+                session_id=saved_session.id,
+                event_type=SessionEventType.SESSION_CREATED,
+                metadata={
+                    "customer_name": customer_name,
+                    "issue_description": issue_description,
+                },
+            )
+            await self.event_repo.save(event)
+
+            await self.db_session.commit()
+            return saved_session
+        except Exception:
+            await self.db_session.rollback()
+            raise
+
+    async def accept_support_request(self, session_id: uuid.UUID, agent_id: str) -> DomainSession:
+        """Assign agent to a pending support session and transition to ACTIVE."""
+        try:
+            session = await self.session_repo.get_by_id(session_id)
+            if not session:
+                raise SessionNotFound(str(session_id))
+            
+            # Idempotently transition to ACTIVE and assign agent
+            session.agent_id = agent_id
+            session.activate() # transitions status to ACTIVE and updates started_at / updated_at
+            
+            saved_session = await self.session_repo.save(session)
+
+            # Record accept/activation event
+            event = DomainSessionEvent(
+                session_id=saved_session.id,
+                event_type=SessionEventType.SESSION_STARTED,
+                metadata={
+                    "agent_id": agent_id,
+                },
+            )
+            await self.event_repo.save(event)
+
+            # Flush system message that the agent accepted
+            from src.services.chat_service import flush_system_message, broadcast_system_message_payload
+            payload = await flush_system_message(self.db_session, session_id, f"Support agent {agent_id} joined the session.")
+            
+            await self.db_session.commit()
+
+            # Broadcast system chat event to WebSocket
+            await broadcast_system_message_payload(session_id, payload)
+
+            return saved_session
+        except Exception:
+            await self.db_session.rollback()
+            raise
+
+    async def request_video(self, session_id: uuid.UUID, agent_id: str) -> DomainSession:
+        try:
+            session = await self.session_repo.get_by_id(session_id)
+            if not session:
+                raise SessionNotFound(str(session_id))
+            
+            if session.agent_id != agent_id:
+                raise PermissionDenied("Only the assigned agent can start a video call.")
+
+            session.video_escalation_status = "REQUESTED"
+            saved_session = await self.session_repo.save(session)
+            
+            # Save system chat message about video request
+            from src.services.chat_service import flush_system_message, broadcast_system_message_payload
+            payload = await flush_system_message(
+                self.db_session, session_id,
+                "Support agent has requested to start a video call.",
+                metadata={"type": "VIDEO_REQUESTED"}
+            )
+            await self.db_session.commit()
+            
+            await broadcast_system_message_payload(session_id, payload)
+            return saved_session
+        except Exception:
+            await self.db_session.rollback()
+            raise
+
+    async def accept_video(self, session_id: uuid.UUID, customer_name: str) -> DomainSession:
+        try:
+            session = await self.session_repo.get_by_id(session_id)
+            if not session:
+                raise SessionNotFound(str(session_id))
+            
+            session.video_escalation_status = "ACTIVE"
+            saved_session = await self.session_repo.save(session)
+            
+            # Save system chat message about video accepted
+            from src.services.chat_service import flush_system_message, broadcast_system_message_payload
+            payload = await flush_system_message(
+                self.db_session, session_id,
+                "Video call has started.",
+                metadata={"type": "VIDEO_ACTIVE"}
+            )
+            await self.db_session.commit()
+            
+            await broadcast_system_message_payload(session_id, payload)
+            return saved_session
+        except Exception:
+            await self.db_session.rollback()
+            raise
+
     async def get_session(self, session_id: uuid.UUID) -> DomainSession:
         """Retrieve session by ID, raises SessionNotFound if missing."""
         session = await self.session_repo.get_by_id(session_id)
@@ -175,10 +291,10 @@ class SessionService:
             raise
 
     async def list_sessions(
-        self, limit: int = 20, offset: int = 0, status: Optional[str] = None
+        self, limit: int = 20, offset: int = 0, status: Optional[str] = None, unassigned: Optional[bool] = None
     ) -> Tuple[List[DomainSession], int]:
         """Query historical sessions."""
-        return await self.session_repo.list_sessions(limit=limit, offset=offset, status=status)
+        return await self.session_repo.list_sessions(limit=limit, offset=offset, status=status, unassigned=unassigned)
 
     async def get_session_events(self, session_id: uuid.UUID, initiator: Identity) -> List[DomainSessionEvent]:
         """Retrieve all events related to a session."""
