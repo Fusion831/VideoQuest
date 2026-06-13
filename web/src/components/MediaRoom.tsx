@@ -169,7 +169,7 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
     let active = true;
 
     async function fetchToken() {
-      if (sessionStatus !== 'ACTIVE') {
+      if (sessionStatus !== 'ACTIVE' && sessionStatus !== 'ABANDONED') {
         setLoading(false);
         return;
       }
@@ -223,8 +223,23 @@ export default function MediaRoom({ sessionId, userId, role, sessionStatus }: Me
     </div>
   );
 
-  // 5. Render Local Queue Preview Mode if not active
-  if (sessionStatus !== 'ACTIVE') {
+  // Render Session Ended View if ENDED
+  if (sessionStatus === 'ENDED') {
+    return (
+      <div className="rounded-2xl border border-zinc-800 bg-zinc-900 overflow-hidden shadow-xl shadow-black/40 flex flex-col p-6 items-center justify-center text-center" style={{ minHeight: '380px' }}>
+        <svg className="w-10 h-10 text-zinc-650 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+        </svg>
+        <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Session Ended</span>
+        <span className="text-[10px] text-zinc-500 max-w-[240px] mt-1 select-none">
+          This call has concluded. You can safely close this window.
+        </span>
+      </div>
+    );
+  }
+
+  // 5. Render Local Queue Preview Mode if CREATED
+  if (sessionStatus === 'CREATED') {
     const expectedRemoteRole = role === 'agent' ? 'customer' : 'agent';
     return (
       <div className="rounded-2xl border border-zinc-800 bg-zinc-900 overflow-hidden shadow-xl shadow-black/40 flex flex-col" style={{ minHeight: '380px' }}>
@@ -422,6 +437,31 @@ function getConnectionLabel(state: string) {
   }
 }
 
+function LocalVideoTileDiagnostic({
+  identity,
+  sid,
+  trackSid,
+  isPublished,
+}: {
+  identity: string;
+  sid: string;
+  trackSid: string;
+  isPublished: boolean;
+}) {
+  useEffect(() => {
+    console.log('[LocalVideoTileDiagnostic] MOUNTED:', { identity, sid, trackSid, isPublished });
+    return () => {
+      console.log('[LocalVideoTileDiagnostic] UNMOUNTED:', { identity, sid, trackSid, isPublished });
+    };
+  }, []);
+
+  useEffect(() => {
+    console.log('[LocalVideoTileDiagnostic] UPDATED state:', { identity, sid, trackSid, isPublished });
+  }, [identity, sid, trackSid, isPublished]);
+
+  return null;
+}
+
 function MediaGrid({
   role,
   isCameraPreConnected,
@@ -448,7 +488,7 @@ function MediaGrid({
   const room = useRoomContext();
   const [showDiagnostics, setShowDiagnostics] = useState(false);
 
-  const remoteParticipant = participants.find((p) => p.sid !== localParticipant?.sid);
+  const remoteParticipant = participants.find((p) => p.identity !== localParticipant?.identity);
   const expectedRemoteRole = role === 'agent' ? 'customer' : 'agent';
 
   // 1. Local UI Target States for lag-free visual response
@@ -615,11 +655,24 @@ function MediaGrid({
 
   // Local/Remote Video TrackReferences
   const localVideoTrackRef = tracks.find(
-    (t) => t.participant.sid === localParticipant?.sid && t.source === Track.Source.Camera
+    (t) => t.participant.identity === localParticipant?.identity && t.source === Track.Source.Camera
   ) as any;
   const remoteVideoTrackRef = remoteParticipant
-    ? (tracks.find((t) => t.participant.sid === remoteParticipant.sid && t.source === Track.Source.Camera) as any)
+    ? (tracks.find((t) => t.participant.identity === remoteParticipant.identity && t.source === Track.Source.Camera) as any)
     : null;
+
+  // Local Video Track diagnostics on mount / update
+  useEffect(() => {
+    console.log('[LocalVideoTile-Diag] Render state check:', {
+      localParticipantSid: localParticipant?.sid,
+      localParticipantIdentity: localParticipant?.identity,
+      localCameraActive,
+      hasLocalVideoTrackRef: !!localVideoTrackRef,
+      localVideoTrackSid: localVideoTrackRef?.publication?.trackSid || localVideoTrackRef?.track?.sid || 'None',
+      isLocalVideoPublished,
+      cameraSyncing,
+    });
+  }, [localParticipant, localCameraActive, localVideoTrackRef, isLocalVideoPublished, cameraSyncing]);
 
   const handleToggleMute = () => {
     if (micSyncing || !localParticipant) return;
@@ -645,6 +698,12 @@ function MediaGrid({
             localVideoTrackRef ? (
               <div className="w-full h-full [&>video]:object-cover relative">
                 <VideoTrack trackRef={localVideoTrackRef} className="w-full h-full object-cover scale-x-[-1]" />
+                <LocalVideoTileDiagnostic
+                  identity={localParticipant?.identity || 'unknown'}
+                  sid={localParticipant?.sid || 'unknown'}
+                  trackSid={localVideoTrackRef?.publication?.trackSid || localVideoTrackRef?.track?.sid || 'unknown'}
+                  isPublished={isLocalVideoPublished}
+                />
               </div>
             ) : (
               <div className="flex flex-col items-center justify-center text-zinc-500 bg-zinc-950/60 w-full h-full select-none gap-2">
@@ -851,11 +910,11 @@ function MediaGrid({
           </div>
           <div className="pt-2 border-t border-zinc-900">
             <div className="text-zinc-500 font-bold mb-1">Subscribed Remote Tracks:</div>
-            {participants.filter(p => p.sid !== localParticipant?.sid).map(p => {
+            {participants.filter(p => p.identity !== localParticipant?.identity).map(p => {
               const videoTracks = Array.from(p.videoTrackPublications.values() as any) as any[];
               const audioTracks = Array.from(p.audioTrackPublications.values() as any) as any[];
               return (
-                <div key={p.sid} className="space-y-0.5">
+                <div key={p.identity} className="space-y-0.5">
                   <div className="text-zinc-300 font-semibold">{p.identity} ({p.sid}):</div>
                   <div className="pl-3 text-zinc-505">
                     - Video: {videoTracks.map(t => `${t.trackSid} (Subscribed: ${t.isSubscribed ? 'Yes' : 'No'}, Muted: ${t.isMuted ? 'Yes' : 'No'})`).join(', ') || 'None'}

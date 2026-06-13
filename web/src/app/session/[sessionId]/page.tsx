@@ -38,7 +38,11 @@ export default function SessionRoomPage({ params }: PageProps) {
 
   // Fetch all room data
   const refreshRoomData = async () => {
-    if (!sessionId) return;
+    if (!sessionId) {
+      console.log('[refreshRoomData] Bypassed: no sessionId');
+      return;
+    }
+    console.log('[refreshRoomData] Start syncing room data...');
     try {
       const [sessionRes, participantsRes, eventsRes, chatMessagesRes] = await Promise.all([
         apiClient.getSession(sessionId),
@@ -46,12 +50,20 @@ export default function SessionRoomPage({ params }: PageProps) {
         apiClient.getSessionEvents(sessionId),
         apiClient.getChatMessages(sessionId),
       ]);
+      console.log('[refreshRoomData] Success. Data retrieved:', {
+        sessionStatus: sessionRes.status,
+        participantsCount: participantsRes.length,
+        participants: participantsRes.map(p => ({ id: p.id, user_id: p.user_id, role: p.role, connection_status: p.connection_status })),
+        eventsCount: eventsRes.length,
+        chatMessagesCount: chatMessagesRes.length
+      });
       setSession(sessionRes);
       setParticipants(participantsRes);
       setEvents(eventsRes.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()));
       setChatMessages(chatMessagesRes);
       setError(null);
     } catch (err: any) {
+      console.error('[refreshRoomData] Failed:', err);
       setError(err.message || 'Failed to sync room state');
     } finally {
       setLoading(false);
@@ -98,18 +110,8 @@ export default function SessionRoomPage({ params }: PageProps) {
     refreshRoomData();
   }, [sessionId]);
 
-  // Establish WebSocket connection for real-time updates (tied to sessionId only)
-  // UX2 fix: currentParticipantId is captured via ref at connect time.
-  // The effect must NOT depend on currentParticipantId to avoid reconnect cascades
-  // that destroy the LiveKit media connection.
-  const participantIdRef = useRef(currentParticipantId);
-  participantIdRef.current = currentParticipantId;
-
   useEffect(() => {
     if (!sessionId) return;
-
-    // Capture participant ID at the moment the WS connection is opened
-    const participantIdAtOpen = participantIdRef.current;
 
     let wsHost = 'ws://localhost:8000';
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || (typeof window !== 'undefined' ? window.location.origin : '');
@@ -127,8 +129,8 @@ export default function SessionRoomPage({ params }: PageProps) {
     }
 
     let wsUrl = `${wsHost}/api/v1/sessions/${sessionId}/ws`;
-    if (participantIdAtOpen) {
-      wsUrl += `?participant_id=${participantIdAtOpen}`;
+    if (currentParticipantId) {
+      wsUrl += `?participant_id=${currentParticipantId}`;
     }
 
     console.log(`Connecting to WebSocket: ${wsUrl}`);
@@ -144,20 +146,27 @@ export default function SessionRoomPage({ params }: PageProps) {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        console.log('Received WebSocket event:', data);
+        console.log('[WebSocket onmessage] Received event:', data);
         if (data.event_type === 'MESSAGE_RECEIVED') {
           setChatMessages((prev) => {
             if (prev.some((m) => m.id === data.payload.id)) return prev;
             return [...prev, data.payload];
           });
+          if (data.payload.message_type === 'SYSTEM') {
+            console.log('[WebSocket onmessage] MESSAGE_RECEIVED system event. Triggering refreshRoomData.');
+            refreshRoomData();
+          } else {
+            console.log('[WebSocket onmessage] MESSAGE_RECEIVED user event. Bypassing refreshRoomData.');
+          }
         } else if (data.event_type === 'MESSAGE_SEND_ERROR') {
+          console.log('[WebSocket onmessage] MESSAGE_SEND_ERROR event matched.');
           setError(`Failed to send message: ${data.payload.reason}`);
         } else {
-          // For participant updates or session state changes, sync room details
+          console.log(`[WebSocket onmessage] Event ${data.event_type} matched. Calling refreshRoomData.`);
           refreshRoomData();
         }
       } catch (err) {
-        console.error('Error handling WebSocket message:', err);
+        console.error('[WebSocket onmessage] Error handling WebSocket message:', err);
       }
     };
 
@@ -176,7 +185,7 @@ export default function SessionRoomPage({ params }: PageProps) {
       ws.close();
       wsRef.current = null;
     };
-  }, [sessionId]); // Only reconnect when navigating to a different session
+  }, [sessionId, currentParticipantId]); // Only reconnect when navigating to a different session
 
   // Set default invite token from fetched session
   useEffect(() => {
